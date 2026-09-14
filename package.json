@@ -1,0 +1,1 @@
+{"name":"line-course-schedule-manager","version":"1.0.0","private":true,"scripts":{"build:schedule":"node schedule_builder.js"},"dependencies":{"dotenv":"^16.4.5","googleapis":"^144.0.0"}}
