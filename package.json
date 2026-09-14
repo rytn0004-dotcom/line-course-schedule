@@ -1,1 +1,17 @@
-{"name":"line-course-schedule-manager","version":"1.0.0","private":true,"scripts":{"build:schedule":"node schedule_builder.js"},"dependencies":{"dotenv":"^16.4.5","googleapis":"^144.0.0"}}
+{
+  "name": "line-course-schedule-manager",
+  "version": "1.1.0",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "googleapis": "^144.0.0"
+  }
+}

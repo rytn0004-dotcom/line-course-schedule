@@ -1,7 +1,9 @@
 services:
-  - type: cron
+  - type: web
     name: line-course-schedule-manager
-    runtime: node
+    env: node
+    plan: free
     buildCommand: npm install
-    startCommand: npm run build:schedule
-    schedule: "5 16 * * *"
+    startCommand: node server.js
+    healthCheckPath: /health
+    autoDeploy: true
