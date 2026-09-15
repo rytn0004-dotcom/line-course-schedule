@@ -148,14 +148,26 @@ function buildRows(fixed, adjusts, fromDate, days){
       }
     }
   }
-  // Explicit new-date adjustments not tied to an original date: add them as extra actual classes.
+  // Explicit add-on adjustments: allow a new class even when there is no original fixed schedule.
+  // This supports experience classes and make-up classes that are not derived from a fixed timetable.
   for(const a of adjusts){
     if(!a.newDate || a.originalDate) continue;
     if(a.action && /取消|停課/.test(a.action)) continue;
     if(a.newDate < fromDate || a.newDate > toDate) continue;
-    const fixed=fixed.find(x=>x.id===a.fixedId);
-    if(!fixed) continue;
-    out.push({date:a.newDate,weekday:weekdayLabel(a.newDate),time:a.newTime||fixed.time,student:a.student||fixed.student,course:a.course||fixed.course,teacher:a.teacher||fixed.teacher,site:a.site||fixed.site,source:'調課課程',fixedId:fixed.id,adjustId:a.id,adjustResult:'新增調課',note:a.note||''});
+    const fixedBase = fixed.find(x=>x.id===a.fixedId);
+    const action = norm(a.action);
+    const isAdd = /新增|補課|體驗/.test(action) || !a.fixedId;
+    if(!isAdd) continue;
+    const student = a.student || fixedBase?.student || '';
+    const course = a.course || fixedBase?.course || '';
+    const teacher = a.teacher || fixedBase?.teacher || '';
+    const site = a.site || fixedBase?.site || '';
+    if(!student || !a.newTime) continue;
+    out.push({
+      date:a.newDate, weekday:weekdayLabel(a.newDate), time:a.newTime || fixedBase?.time || '',
+      student, course, teacher, site, source:'調課課程', fixedId:fixedBase?.id || '',
+      adjustId:a.id, adjustResult:'新增調課', note:a.note||''
+    });
   }
   // Stable sort and de-duplicate exact output rows.
   const seen=new Set(); const final=[];
@@ -182,7 +194,7 @@ async function build({fromDate=todayKey(),days=DEFAULT_DAYS}={}){
 }
 
 let lastBuild={status:'not_run'};
-app.get('/health',(req,res)=>res.json({ok:true,service:'line-course-schedule-manager-v1',timezone:TZ,lastBuild}));
+app.get('/health',(req,res)=>res.json({ok:true,service:'line-course-schedule-manager-v1.2',timezone:TZ,lastBuild}));
 app.get('/build',async(req,res)=>{
   try{
     const fromDate=req.query.from || todayKey();
@@ -192,7 +204,7 @@ app.get('/build',async(req,res)=>{
   }catch(e){ lastBuild={status:'error',error:e.message,at:new Date().toISOString()}; console.error(e); res.status(500).json(lastBuild); }
 });
 
-app.listen(PORT,()=>console.log(`LINE Course Schedule Manager listening on ${PORT}`));
+app.listen(PORT,()=>console.log(`LINE Course Schedule Manager v1.2 listening on ${PORT}`));
 // Light automatic refresh: rebuild once at startup, then every 6 hours. No LINE sending.
 (async()=>{
   try { lastBuild=await build({fromDate:todayKey(),days:DEFAULT_DAYS}); lastBuild.at=new Date().toISOString(); console.log('Initial schedule build complete',lastBuild); }
