@@ -48,9 +48,30 @@ function qsheet(name){ return `'${String(name).replace(/'/g,"''")}'`; }
 function str(v){ return String(v ?? '').trim(); }
 function norm(v){ return str(v).replace(/\s+/g,''); }
 function split(v){ return str(v).split(/[、,，\/]/).map(s=>s.trim()).filter(Boolean); }
-function hmap(h){ return Object.fromEntries((h||[]).map((x,i)=>[str(x),i])); }
+function normHeader(v){
+  return str(v)
+    .replace(/[\s\u3000]+/g,'')
+    .replace(/[（(][^）)]*[）)]/g,'')
+    .replace(/[【\[][^】\]]*[】\]]/g,'')
+    .replace(/[\/／\\]/g,'');
+}
+function hmap(h){
+  const out={};
+  for(const [i,x] of (h||[]).entries()){
+    const raw=str(x);
+    if(raw) out[raw]=i;
+    const normalized=normHeader(raw);
+    if(normalized && out[normalized]===undefined) out[normalized]=i;
+  }
+  return out;
+}
 function findHeaderRow(rows, required){
-  return (rows||[]).findIndex(r=>Array.isArray(r) && required.every(k=>r.map(str).includes(k)));
+  const wanted=(required||[]).map(normHeader);
+  return (rows||[]).findIndex(r=>{
+    if(!Array.isArray(r)) return false;
+    const got=new Set(r.map(normHeader).filter(Boolean));
+    return wanted.every(k=>got.has(k));
+  });
 }
 function dateKey(v){
   if (typeof v === 'number') {
