@@ -362,16 +362,11 @@ function formatReminderMember(course, student){
 function mergeReminderItems(items){
   const groups=new Map();
   for(const item of items){
-    // 同一位收件人、同一天、同一時間、同一位老師、同一校區
-    // 的課程合併成一則提醒。
-    const key=[
-      item.role,
-      compact(item.recipient),
-      item.date,
-      item.time,
-      compact(item.teacher),
-      compact(item.site)
-    ].join('|');
+    // 老師：同一天＋同校區＋同一位老師，只發一則，內含所有時段。
+    // 家長：維持同一時間合併，避免不同時間的課程混在同一則家長通知。
+    const key=item.role==='老師'
+      ? [item.role,compact(item.recipient),item.date,compact(item.teacher),compact(item.site)].join('|')
+      : [item.role,compact(item.recipient),item.date,item.time,compact(item.teacher),compact(item.site)].join('|');
     if(!groups.has(key)) groups.set(key,[]);
     groups.get(key).push(item);
   }
@@ -383,6 +378,7 @@ function mergeReminderItems(items){
     const memberKeys=new Set();
     const courses=[];
     const courseKeys=new Set();
+    const scheduleByTime=new Map();
 
     for(const item of group){
       const member=formatReminderMember(item.course,item.student);
@@ -398,31 +394,45 @@ function mergeReminderItems(items){
         courseKeys.add(courseKey);
         courses.push(course);
       }
+
+      if(item.role==='老師'){
+        const time=timeKey(item.time) || str(item.time);
+        if(!time || !member) continue;
+        if(!scheduleByTime.has(time)) scheduleByTime.set(time,[]);
+        const list=scheduleByTime.get(time);
+        if(!list.some(x=>compact(x)===memberKey)) list.push(member);
+      }
     }
+
+    const scheduleLines=Array.from(scheduleByTime.entries())
+      .sort((a,b)=>a[0].localeCompare(b[0]))
+      .map(([time,list])=>time+' '+list.join('、'))
+      .join('\n');
 
     merged.push({
       ...first,
       student:members.join('、'),
       course:courses.join('、'),
-      members:members.join('、')
+      members:members.join('、'),
+      scheduleLines
     });
   }
-
   return merged;
 }
 
 function reminderGroupId(item){
-  // 用課程提醒條件產生穩定 ID，讓後續 6 小時重建時仍能找到同一筆提醒。
-  const raw=[
-    item.role,item.recipient,item.date,item.time,item.teacher,item.site
-  ].join('|');
+  // 老師的提醒 ID 不含時間：同一天同校區只維持一個穩定提醒。
+  const raw=item.role==='老師'
+    ? [item.role,item.recipient,item.date,item.teacher,item.site].join('|')
+    : [item.role,item.recipient,item.date,item.time,item.teacher,item.site].join('|');
   let hash=2166136261;
   for(let i=0;i<raw.length;i++){
     hash^=raw.charCodeAt(i);
     hash=Math.imul(hash,16777619);
   }
   const hex=(hash>>>0).toString(16).padStart(8,'0');
-  return `MERGED-${item.date}-${item.time.replace(':','')}-${item.role}-${hex}`;
+  const slot=item.role==='老師' ? 'DAILY' : item.time.replace(':','');
+  return `MERGED-${item.date}-${slot}-${item.role}-${hex}`;
 }
 
 function makeReminderRows(actual, contacts, templates, settings, fixedTemplateById){
@@ -489,35 +499,55 @@ function makeReminderRows(actual, contacts, templates, settings, fixedTemplateBy
   const merged=mergeReminderItems(raw);
   return merged.map(x=>{
     const id=reminderGroupId(x);
-    const content=safeReplaceTemplate(x.template,{
-      學生:x.members || x.student,
-      日期:x.dateLabel,
-      星期:weekdayLabel(x.date),
-      時間:x.time,
-      課程:x.course,
-      老師:x.teacher,
-      校區:x.site,
-      學生成員:x.members || x.student
-    });
+    let content;
+    if(x.role==='老師'){
+      // 老師每日提醒固定採用：日期＋校區＋時段／學生清單。
+      // 優先沿用模板中的開頭與「謝謝」後的簽名，避免覆蓋既有簽名。
+      const renderedTemplate=safeReplaceTemplate(x.template,{
+        日期:x.dateLabel,
+        星期:weekdayLabel(x.date),
+        時間:'',
+        課程:x.course,
+        老師:x.teacher,
+        校區:x.site,
+        學生:x.members || x.student,
+        學生成員:x.scheduleLines || x.members || x.student
+      });
+      if(x.template){
+        let teacherText=renderedTemplate;
+        teacherText=teacherText.replace(/，?\s*於\s*於/g,'，於');
+        teacherText=teacherText.replace(/([，,])?\s*謝謝！/,'\n謝謝！');
+        if(x.scheduleLines){
+          teacherText=teacherText.replace(/([，,])?\s*(謝謝！)/,'\n$2');
+          teacherText=teacherText.replace(/(學生成員：)\s*/,'$1\\n');
+        }
+        content=teacherText;
+      }else{
+        content=[
+          `老師您好，提醒您於${x.dateLabel}(${weekdayLabel(x.date)})，於${x.site}有課程，學生成員：`,
+          x.scheduleLines || x.members || x.student,
+          '謝謝！'
+        ].join('\n');
+      }
+    }else{
+      content=safeReplaceTemplate(x.template,{
+        學生:x.members || x.student,
+        日期:x.dateLabel,
+        星期:weekdayLabel(x.date),
+        時間:x.time,
+        課程:x.course,
+        老師:x.teacher,
+        校區:x.site,
+        學生成員:x.members || x.student
+      });
+    }
     return {
-      key:`${id}|${x.role}|${x.recipient}`,
-      id,
-      courseId:x.courseId,
-      date:x.date,
-      time:x.time,
-      sendDate:x.sendDate,
-      sendTime:x.sendTime,
-      role:x.role,
-      recipient:x.recipient,
-      userId:x.userId,
-      student:x.members || x.student,
-      course:x.course,
-      teacher:x.teacher,
-      site:x.site,
-      content,
-      confirm:x.confirm
+      key:id+'|'+x.role+'|'+x.recipient,
+      id,courseId:x.courseId,date:x.date,time:x.time,sendDate:x.sendDate,sendTime:x.sendTime,
+      role:x.role,recipient:x.recipient,userId:x.userId,student:x.members||x.student,
+      course:x.course,teacher:x.teacher,site:x.site,content,confirm:x.confirm
     };
-  });
+  });;
 }
 
 async function syncReminders(actualRows, reminderRows, contacts, templates, settings, fromDate, days, fixedTemplateByIdInput){
@@ -526,9 +556,12 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
   for(const f of fixedTemplateByIdInput) fixedTemplateById.set(f.id,f.template || '');
   const expected=makeReminderRows(actualObjects(actualRows),contacts,templates,settings,fixedTemplateById);
   const expectedKeys=new Set(expected.map(x=>x.id+'|'+x.role+'|'+x.recipient));
-  const expectedLogicalKeys=new Set(expected.map(x=>[
-    x.role,compact(x.recipient),x.date,x.time,compact(x.teacher),compact(x.site)
-  ].join('|')));
+  const expectedLogicalKeys=new Set(expected.map(x=>{
+    if(x.role==='老師'){
+      return [x.role,compact(x.recipient),x.date,compact(x.teacher),compact(x.site)].join('|');
+    }
+    return [x.role,compact(x.recipient),x.date,x.time,compact(x.teacher),compact(x.site)].join('|');
+  }));
   const parsed=parseReminderRows(reminderRows);
   const headers=parsed.headers?.length ? parsed.headers : REMINDER_HEADERS;
   const h=hmap(headers);
@@ -573,14 +606,9 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
     if(expectedKeys.has(`${old.id}|${old.role}|${old.recipient}`)) continue;
     const isGenerated = /-(?:P|T)$/.test(old.id) || old.id.startsWith('MERGED-');
     const inWindow = old.date && old.date>=fromDate && old.date<=addDays(fromDate,days-1);
-    const oldLogicalKey=[
-      old.role,
-      compact(old.recipient),
-      old.date,
-      old.time,
-      compact(String(old.values[h['老師']]||'')),
-      compact(String(old.values[h['校區']]||''))
-    ].join('|');
+    const oldLogicalKey=old.role==='老師'
+      ? [old.role,compact(old.recipient),old.date,compact(String(old.values[h['老師']]||'')),compact(String(old.values[h['校區']]||''))].join('|')
+      : [old.role,compact(old.recipient),old.date,old.time,compact(String(old.values[h['老師']]||'')),compact(String(old.values[h['校區']]||''))].join('|');
     const replacedByMerged = expectedLogicalKeys.has(oldLogicalKey) && !expectedKeys.has(old.id+'|'+old.role+'|'+old.recipient);
     if((!isGenerated && !replacedByMerged) || !inWindow) continue;
     const row=old.values.slice(); while(row.length<width) row.push('');
