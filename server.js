@@ -366,7 +366,7 @@ function mergeReminderItems(items){
     // 的課程合併成一則提醒。
     const key=[
       item.role,
-      item.userId,
+      compact(item.recipient),
       item.date,
       item.time,
       compact(item.teacher),
@@ -414,7 +414,7 @@ function mergeReminderItems(items){
 function reminderGroupId(item){
   // 用課程提醒條件產生穩定 ID，讓後續 6 小時重建時仍能找到同一筆提醒。
   const raw=[
-    item.role,item.userId,item.date,item.time,item.teacher,item.site
+    item.role,item.recipient,item.date,item.time,item.teacher,item.site
   ].join('|');
   let hash=2166136261;
   for(let i=0;i<raw.length;i++){
@@ -525,7 +525,10 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
   const fixedTemplateById=new Map();
   for(const f of fixedTemplateByIdInput) fixedTemplateById.set(f.id,f.template || '');
   const expected=makeReminderRows(actualObjects(actualRows),contacts,templates,settings,fixedTemplateById);
-  const expectedKeys=new Set(expected.map(x=>`${x.id}|${x.role}|${x.recipient}`));
+  const expectedKeys=new Set(expected.map(x=>x.id+'|'+x.role+'|'+x.recipient));
+  const expectedLogicalKeys=new Set(expected.map(x=>[
+    x.role,compact(x.recipient),x.date,x.time,compact(x.teacher),compact(x.site)
+  ].join('|')));
   const parsed=parseReminderRows(reminderRows);
   const headers=parsed.headers?.length ? parsed.headers : REMINDER_HEADERS;
   const h=hmap(headers);
@@ -570,7 +573,12 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
     if(expectedKeys.has(`${old.id}|${old.role}|${old.recipient}`)) continue;
     const isGenerated = /-(?:P|T)$/.test(old.id) || old.id.startsWith('MERGED-');
     const inWindow = old.date && old.date>=fromDate && old.date<=addDays(fromDate,days-1);
-    if(!isGenerated || !inWindow) continue;
+    const oldLogicalKey=[
+      old.role,compact(old.recipient),old.date,old.time,
+      compact(String(old.values[9]||'')),compact(String(old.values[10]||''))
+    ].join('|');
+    const replacedByMerged = expectedLogicalKeys.has(oldLogicalKey) && !expectedKeys.has(old.id+'|'+old.role+'|'+old.recipient);
+    if((!isGenerated && !replacedByMerged) || !inWindow) continue;
     const row=old.values.slice(); while(row.length<width) row.push('');
     if(h['確認發送']!==undefined) row[h['確認發送']]='否';
     updates.push({rowNumber:old.rowIndex,values:row});
