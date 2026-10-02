@@ -574,8 +574,12 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
     const isGenerated = /-(?:P|T)$/.test(old.id) || old.id.startsWith('MERGED-');
     const inWindow = old.date && old.date>=fromDate && old.date<=addDays(fromDate,days-1);
     const oldLogicalKey=[
-      old.role,compact(old.recipient),old.date,old.time,
-      compact(String(old.values[9]||'')),compact(String(old.values[10]||''))
+      old.role,
+      compact(old.recipient),
+      old.date,
+      old.time,
+      compact(String(old.values[h['老師']]||'')),
+      compact(String(old.values[h['校區']]||''))
     ].join('|');
     const replacedByMerged = expectedLogicalKeys.has(oldLogicalKey) && !expectedKeys.has(old.id+'|'+old.role+'|'+old.recipient);
     if((!isGenerated && !replacedByMerged) || !inWindow) continue;
