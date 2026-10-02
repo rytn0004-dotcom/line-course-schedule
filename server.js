@@ -519,7 +519,7 @@ function makeReminderRows(actual, contacts, templates, settings, fixedTemplateBy
         teacherText=teacherText.replace(/([，,])?\s*謝謝！/,'\n謝謝！');
         if(x.scheduleLines){
           teacherText=teacherText.replace(/([，,])?\s*(謝謝！)/,'\n$2');
-          teacherText=teacherText.replace(/(學生成員：)\s*/,'$1\\n');
+          teacherText=teacherText.replace(/(學生成員：)\s*/,'$1\n');
         }
         content=teacherText;
       }else{
