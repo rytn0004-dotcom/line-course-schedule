@@ -332,34 +332,189 @@ function chooseTemplate(templates, role, preferred){
   return '';
 }
 
-function makeReminderRows(actual, contacts, templates, settings, fixedTemplateById){
+function normalizeMemberList(value){
+  const seen=new Set();
   const out=[];
+  for(const item of split(value)){
+    const name=str(item);
+    if(!name) continue;
+    const key=compact(name);
+    if(seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+  }
+  return out;
+}
+
+function formatReminderMember(course, student){
+  const c=str(course);
+  const students=normalizeMemberList(student).join('、');
+  if(!students) return c;
+  // 團班保留班別名稱，學生放在括號內，例如：
+  // 生物團班(葉依柔、陳翊森)
+  if(/團班/.test(c)) return `${c}(${students})`;
+  return students;
+}
+
+function mergeReminderItems(items){
+  const groups=new Map();
+  for(const item of items){
+    // 同一位收件人、同一天、同一時間、同一位老師、同一校區
+    // 的課程合併成一則提醒。
+    const key=[
+      item.role,
+      item.userId,
+      item.date,
+      item.time,
+      compact(item.teacher),
+      compact(item.site)
+    ].join('|');
+    if(!groups.has(key)) groups.set(key,[]);
+    groups.get(key).push(item);
+  }
+
+  const merged=[];
+  for(const group of groups.values()){
+    const first=group[0];
+    const members=[];
+    const memberKeys=new Set();
+    const courses=[];
+    const courseKeys=new Set();
+
+    for(const item of group){
+      const member=formatReminderMember(item.course,item.student);
+      const memberKey=compact(member);
+      if(member && !memberKeys.has(memberKey)){
+        memberKeys.add(memberKey);
+        members.push(member);
+      }
+
+      const course=str(item.course);
+      const courseKey=compact(course);
+      if(course && !courseKeys.has(courseKey)){
+        courseKeys.add(courseKey);
+        courses.push(course);
+      }
+    }
+
+    merged.push({
+      ...first,
+      student:members.join('、'),
+      course:courses.join('、'),
+      members:members.join('、')
+    });
+  }
+
+  return merged;
+}
+
+function reminderGroupId(item){
+  // 用課程提醒條件產生穩定 ID，讓後續 6 小時重建時仍能找到同一筆提醒。
+  const raw=[
+    item.role,item.userId,item.date,item.time,item.teacher,item.site
+  ].join('|');
+  let hash=2166136261;
+  for(let i=0;i<raw.length;i++){
+    hash^=raw.charCodeAt(i);
+    hash=Math.imul(hash,16777619);
+  }
+  const hex=(hash>>>0).toString(16).padStart(8,'0');
+  return `MERGED-${item.date}-${item.time.replace(':','')}-${item.role}-${hex}`;
+}
+
+function makeReminderRows(actual, contacts, templates, settings, fixedTemplateById){
+  const raw=[];
   const requireConfirm = settings.requireConfirm !== '否';
+
   for(const c of actual){
     if(c.adjustResult==='取消') continue;
     const slot=previousReminderSlot(c.date,settings);
     if(!slot.sendDate || !slot.sendTime) continue;
     const dateLabel=c.date.replaceAll('-','/');
+
     if(settings.parentNotify==='是'){
       for(const person of contacts.filter(x=>x.role==='家長' && includesStudent(x.related,c.student))){
         const preferred = fixedTemplateById.get(c.fixedId) || '';
         const template=chooseTemplate(templates,'家長',preferred);
-        const content=safeReplaceTemplate(template,{學生:c.student,日期:dateLabel,星期:c.weekday,時間:c.time,課程:c.course,老師:c.teacher,校區:c.site,學生成員:c.student});
-        const id=`${c.courseId}-P`;
-        out.push({key:id,id,courseId:c.courseId,date:c.date,time:c.time,sendDate:slot.sendDate,sendTime:slot.sendTime,role:'家長',recipient:person.name,userId:person.userId,student:c.student,course:c.course,teacher:c.teacher,site:c.site,content,confirm:requireConfirm?'否':'是'});
+        raw.push({
+          id:'',
+          courseId:c.courseId,
+          date:c.date,
+          time:c.time,
+          sendDate:slot.sendDate,
+          sendTime:slot.sendTime,
+          role:'家長',
+          recipient:person.name,
+          userId:person.userId,
+          student:c.student,
+          course:c.course,
+          teacher:c.teacher,
+          site:c.site,
+          template,
+          dateLabel,
+          confirm:requireConfirm?'否':'是'
+        });
       }
     }
+
     if(settings.teacherNotify==='是'){
       for(const person of contacts.filter(x=>x.role==='老師' && compact(x.related)===compact(c.teacher))){
         const preferred=fixedTemplateById.get(c.fixedId) || '';
         const template=chooseTemplate(templates,'老師',preferred);
-        const content=safeReplaceTemplate(template,{學生:c.student,日期:dateLabel,星期:c.weekday,時間:c.time,課程:c.course,老師:c.teacher,校區:c.site,學生成員:c.student});
-        const id=`${c.courseId}-T`;
-        out.push({key:id,id,courseId:c.courseId,date:c.date,time:c.time,sendDate:slot.sendDate,sendTime:slot.sendTime,role:'老師',recipient:person.name,userId:person.userId,student:c.student,course:c.course,teacher:c.teacher,site:c.site,content,confirm:requireConfirm?'否':'是'});
+        raw.push({
+          id:'',
+          courseId:c.courseId,
+          date:c.date,
+          time:c.time,
+          sendDate:slot.sendDate,
+          sendTime:slot.sendTime,
+          role:'老師',
+          recipient:person.name,
+          userId:person.userId,
+          student:c.student,
+          course:c.course,
+          teacher:c.teacher,
+          site:c.site,
+          template,
+          dateLabel,
+          confirm:requireConfirm?'否':'是'
+        });
       }
     }
   }
-  return out;
+
+  const merged=mergeReminderItems(raw);
+  return merged.map(x=>{
+    const id=reminderGroupId(x);
+    const content=safeReplaceTemplate(x.template,{
+      學生:x.members || x.student,
+      日期:x.dateLabel,
+      星期:weekdayLabel(x.date),
+      時間:x.time,
+      課程:x.course,
+      老師:x.teacher,
+      校區:x.site,
+      學生成員:x.members || x.student
+    });
+    return {
+      key:`${id}|${x.role}|${x.recipient}`,
+      id,
+      courseId:x.courseId,
+      date:x.date,
+      time:x.time,
+      sendDate:x.sendDate,
+      sendTime:x.sendTime,
+      role:x.role,
+      recipient:x.recipient,
+      userId:x.userId,
+      student:x.members || x.student,
+      course:x.course,
+      teacher:x.teacher,
+      site:x.site,
+      content,
+      confirm:x.confirm
+    };
+  });
 }
 
 async function syncReminders(actualRows, reminderRows, contacts, templates, settings, fromDate, days, fixedTemplateByIdInput){
