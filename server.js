@@ -37,7 +37,10 @@ async function retry(label, fn){
     catch(e){
       last=e;
       if(!retryable(e)||i>=RETRIES) throw e;
-      const w=Math.min(10000,600*(2**i))+Math.floor(Math.random()*300);
+      const quotaHit=/quota exceeded|rate limit|too many requests/i.test(String(e?.message||'')) || Number(e?.code||e?.response?.status||0)===429;
+      const w=quotaHit
+        ? Math.min(60000,15000*(i+1))+Math.floor(Math.random()*1000)
+        : Math.min(10000,600*(2**i))+Math.floor(Math.random()*300);
       console.warn(`${label}: retry ${i+1}/${RETRIES} after ${w}ms`);
       await sleep(w);
     }
@@ -565,7 +568,7 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
   // are explicitly disabled so the separate reminder service cannot send stale classes.
   for(const old of parsed.rows){
     if(expectedKeys.has(`${old.id}|${old.role}|${old.recipient}`)) continue;
-    const isGenerated = /-(?:P|T)$/.test(old.id);
+    const isGenerated = /-(?:P|T)$/.test(old.id) || old.id.startsWith('MERGED-');
     const inWindow = old.date && old.date>=fromDate && old.date<=addDays(fromDate,days-1);
     if(!isGenerated || !inWindow) continue;
     const row=old.values.slice(); while(row.length<width) row.push('');
@@ -574,15 +577,35 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
     disabled++;
   }
 
+  const batchData=[];
+
   for(const u of updates){
-    await retry('update 課程提醒 row',()=>sheets.spreadsheets.values.update({spreadsheetId:SHEET_ID,range:`${qsheet('課程提醒')}!A${u.rowNumber}:${String.fromCharCode(64+Math.min(width,26))}${u.rowNumber}`,valueInputOption:'RAW',requestBody:{values:[u.values]}}));
+    batchData.push({
+      range:`${qsheet('課程提醒')}!A${u.rowNumber}:${String.fromCharCode(64+Math.min(width,26))}${u.rowNumber}`,
+      values:[u.values]
+    });
   }
+
   if(append.length){
     const startRow=parsed.rows.length ? Math.max(...parsed.rows.map(r=>r.rowIndex))+1 : (parsed.headerRow>=0 ? parsed.headerRow+2 : 2);
-    await retry('append 課程提醒',()=>sheets.spreadsheets.values.update({spreadsheetId:SHEET_ID,range:`${qsheet('課程提醒')}!A${startRow}:${String.fromCharCode(64+Math.min(width,26))}${startRow+append.length-1}`,valueInputOption:'RAW',requestBody:{values:append}}));
+    batchData.push({
+      range:`${qsheet('課程提醒')}!A${startRow}:${String.fromCharCode(64+Math.min(width,26))}${startRow+append.length-1}`,
+      values:append
+    });
   }
+
   if(parsed.headerRow<0){
-    await retry('write 課程提醒 header',()=>sheets.spreadsheets.values.update({spreadsheetId:SHEET_ID,range:`${qsheet('課程提醒')}!A1:M1`,valueInputOption:'RAW',requestBody:{values:[REMINDER_HEADERS]}}));
+    batchData.unshift({
+      range:`${qsheet('課程提醒')}!A1:M1`,
+      values:[REMINDER_HEADERS]
+    });
+  }
+
+  if(batchData.length){
+    await retry('batch update 課程提醒',()=>sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId:SHEET_ID,
+      requestBody:{valueInputOption:'RAW',data:batchData}
+    }));
   }
   return {expectedCount:expected.length,created,updated,disabled,reminderServiceEnabled:settings.enabled==='是',lineSending:false};
 }
@@ -603,12 +626,19 @@ async function build({fromDate=todayKey(),days=DEFAULT_DAYS}={}){
 }
 
 let lastBuild={status:'not_run'};
+let buildInProgress=null;
 app.get('/health',(req,res)=>res.json({ok:true,service:'line-course-schedule-manager-v1.2',timezone:TZ,lastBuild}));
+async function buildOnce(options){
+  if(buildInProgress) return buildInProgress;
+  buildInProgress=build(options).finally(()=>{ buildInProgress=null; });
+  return buildInProgress;
+}
+
 app.get('/build',async(req,res)=>{
   try{
     const fromDate=req.query.from || todayKey();
     const days=Math.min(180,Math.max(1,Number(req.query.days||DEFAULT_DAYS)));
-    lastBuild=await build({fromDate,days}); lastBuild.at=new Date().toISOString();
+    lastBuild=await buildOnce({fromDate,days}); lastBuild.at=new Date().toISOString();
     res.json(lastBuild);
   }catch(e){ lastBuild={status:'error',error:e.message,at:new Date().toISOString()}; console.error(e); res.status(500).json(lastBuild); }
 });
@@ -616,10 +646,10 @@ app.get('/build',async(req,res)=>{
 app.listen(PORT,()=>console.log(`LINE Course Schedule Manager v1.2 listening on ${PORT}`));
 // Light automatic refresh: rebuild once at startup, then every 6 hours. No LINE sending.
 (async()=>{
-  try { lastBuild=await build({fromDate:todayKey(),days:DEFAULT_DAYS}); lastBuild.at=new Date().toISOString(); console.log('Initial schedule build complete',lastBuild); }
+  try { lastBuild=await buildOnce({fromDate:todayKey(),days:DEFAULT_DAYS}); lastBuild.at=new Date().toISOString(); console.log('Initial schedule build complete',lastBuild); }
   catch(e){ lastBuild={status:'error',error:e.message,at:new Date().toISOString()}; console.error('Initial schedule build failed',e); }
   setInterval(async()=>{
-    try { lastBuild=await build({fromDate:todayKey(),days:DEFAULT_DAYS}); lastBuild.at=new Date().toISOString(); console.log('Scheduled schedule rebuild complete',lastBuild); }
+    try { lastBuild=await buildOnce({fromDate:todayKey(),days:DEFAULT_DAYS}); lastBuild.at=new Date().toISOString(); console.log('Scheduled schedule rebuild complete',lastBuild); }
     catch(e){ lastBuild={status:'error',error:e.message,at:new Date().toISOString()}; console.error('Scheduled schedule rebuild failed',e); }
   }, 6*60*60*1000).unref?.();
 })();
