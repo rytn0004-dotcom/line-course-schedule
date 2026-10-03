@@ -23,6 +23,7 @@ app.use(express.json());
 
 const WEEKDAYS = ['日','一','二','三','四','五','六'];
 const REMINDER_HEADERS = ['提醒ID','課程日期','上課時間','發送日期','發送時間','身分','收件人','學生/學生成員','課程','老師','校區','訊息內容','確認發送'];
+const CORRECTION_HEADERS = ['日期','學生','原時間','校正動作','新時間','新課程','新老師','備註'];
 function normValue(v){ return String(v ?? '').trim().toLowerCase(); }
 
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
@@ -87,14 +88,15 @@ function dateKey(v){
   return m ? `${m[1]}-${String(+m[2]).padStart(2,'0')}-${String(+m[3]).padStart(2,'0')}` : s.slice(0,10);
 }
 function timeKey(v){
-  if (typeof v === 'number') {
-    const mins = Math.round((v % 1) * 24 * 60);
-    return `${String(Math.floor(mins/60)%24).padStart(2,'0')}:${String(mins%60).padStart(2,'0')}`;
-  }
-  const s=str(v);
-  const m=s.match(/^(\d{1,2}):([0-5]\d)/);
-  return m ? `${String(+m[1]).padStart(2,'0')}:${m[2]}` : '';
+  if(typeof v==='number'){ const mins=Math.round((v%1)*24*60); return String(Math.floor(mins/60)%24).padStart(2,'0')+':'+String(mins%60).padStart(2,'0'); }
+  const x=str(v).replace(/\s+/g,''); const m=x.match(/^(\d{1,2}):([0-5]\d)/);
+  if(m) return String(+m[1]).padStart(2,'0')+':'+m[2];
+  if(/^\d{3,4}$/.test(x)){ const n=x.padStart(4,'0'),hh=+n.slice(0,2),mm=+n.slice(2); if(hh<24&&mm<60)return String(hh).padStart(2,'0')+':'+String(mm).padStart(2,'0'); }
+  return '';
 }
+function parseTimeRange(v){ const m=str(v).replace(/\s+/g,'').match(/(\d{1,2}:?\d{2})[-~～至](\d{1,2}:?\d{2})/); return m?{start:timeKey(m[1]),end:timeKey(m[2])}:{start:'',end:''}; }
+function extractStudentFromTime(v){ const m=str(v).match(/(?:\d{1,2}:?\d{2})\s*[-~～至]\s*(?:\d{1,2}:?\d{2})\s*([^()（）]*)/); return m?str(m[1]):''; }
+function parseDateFlexible(v, fallbackYear=new Date().toLocaleString('en-US',{timeZone:TZ,year:'numeric'})){ if(typeof v==='number')return dateKey(v); const x=str(v),full=dateKey(x); if(/^\d{4}-\d{2}-\d{2}$/.test(full))return full; const m=x.match(/^(\d{1,2})[\/.\-](\d{1,2})$/); return m?fallbackYear+'-'+String(+m[1]).padStart(2,'0')+'-'+String(+m[2]).padStart(2,'0'):full; }
 function todayKey(){
   const p=new Intl.DateTimeFormat('en-US',{timeZone:TZ,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());
   const g=t=>p.find(x=>x.type===t)?.value;
@@ -130,21 +132,24 @@ function safeReplaceTemplate(t, values){
 }
 
 async function ensureSheet(title){
-  const r = await retry('get spreadsheet metadata', ()=>sheets.spreadsheets.get({spreadsheetId:SHEET_ID,fields:'sheets.properties'}));
-  const exists = (r.data.sheets||[]).some(s=>s.properties?.title===title);
-  if(exists) return;
-  await retry(`create sheet ${title}`, ()=>sheets.spreadsheets.batchUpdate({
-    spreadsheetId:SHEET_ID,
-    requestBody:{requests:[{addSheet:{properties:{title}}}]}
-  }));
+  const r=await retry('get spreadsheet metadata',()=>sheets.spreadsheets.get({spreadsheetId:SHEET_ID,fields:'sheets.properties'}));
+  const exists=(r.data.sheets||[]).some(s=>s.properties?.title===title);
+  if(exists)return;
+  await retry('create sheet '+title,()=>sheets.spreadsheets.batchUpdate({spreadsheetId:SHEET_ID,requestBody:{requests:[{addSheet:{properties:{title}}}]}}));
 }
-
+async function ensureSheetHeaders(title,headers){
+  await ensureSheet(title); const end=String.fromCharCode(64+headers.length);
+  const r=await retry('read '+title+' headers',()=>sheets.spreadsheets.values.get({spreadsheetId:SHEET_ID,range:qsheet(title)+'!A1:'+end+'5'}));
+  if(findHeaderRow(r.data.values||[],headers)>=0)return;
+  await retry('write '+title+' headers',()=>sheets.spreadsheets.values.update({spreadsheetId:SHEET_ID,range:qsheet(title)+'!A1:'+end+'1',valueInputOption:'RAW',requestBody:{values:[headers]}}));
+}
 async function readSheets(){
   return retry('schedule batchGet', async()=>{
     const ranges=[
       `${qsheet('系統設定')}!A:Z`,
       `${qsheet('固定課表')}!A:K`,
       `${qsheet('調課課程')}!A:M`,
+      `${qsheet('課程校正')}!A:H`,
       `${qsheet('實際課程')}!A:M`,
       `${qsheet('聯絡人')}!A:K`,
       `${qsheet('訊息模板')}!A:D`,
@@ -184,21 +189,18 @@ function parseFixed(rows){
   for(let i=hr+1;i<rows.length;i++){
     const r=rows[i]||[]; const id=str(r[h['固定課表ID']]); if(!id) continue;
     if(norm(r[h['啟用']])!=='是') continue;
-    const weekday=norm(r[h['星期']]); const time=timeKey(r[h['上課時間']]);
+    const weekday=norm(r[h['星期']]); const rawTime=str(r[h['上課時間']]); const range=parseTimeRange(rawTime); const time=range.start||timeKey(rawTime);
     if(!weekday||!time) continue;
-    out.push({id,weekday,time,student:str(r[h['學生']]),course:str(r[h['課程']]),teacher:str(r[h['老師']]),site:str(r[h['校區']]),until:dateKey(r[h['有效迄日']]),template:str(r[h['通知模板']]),note:str(r[h['備註']])});
+    out.push({id,weekday,time,endTime:range.end,student:str(r[h['學生']])||extractStudentFromTime(rawTime),course:str(r[h['課程']]),teacher:str(r[h['老師']]),site:str(r[h['校區']]),until:dateKey(r[h['有效迄日']]),template:str(r[h['通知模板']]),note:str(r[h['備註']]),rawTime});
   }
   return out;
 }
-function parseAdjust(rows){
-  const hr=findHeaderRow(rows,['調課ID','原固定課表ID','原日期','原時間','動作','新日期','新時間','學生','確認']);
-  if(hr<0) throw new Error('調課課程欄位不正確。');
-  const h=hmap(rows[hr]), out=[];
-  for(let i=hr+1;i<rows.length;i++){
-    const r=rows[i]||[]; const id=str(r[h['調課ID']]); if(!id) continue;
-    if(norm(r[h['確認']])!=='是') continue;
-    out.push({id,fixedId:str(r[h['原固定課表ID']]),originalDate:dateKey(r[h['原日期']]),originalTime:timeKey(r[h['原時間']]),action:str(r[h['動作']]),newDate:dateKey(r[h['新日期']]),newTime:timeKey(r[h['新時間']]),student:str(r[h['學生']]),course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:str(r[h['新校區']]),note:str(r[h['備註']])});
-  }
+function parseAdjust(rows, correctionRows=[]){
+  const legacyHr=findHeaderRow(rows,['調課ID','原固定課表ID','原日期','原時間','動作','新日期','新時間','學生','確認']);
+  const simpleHr=findHeaderRow(rows,['原日期','原時間','動作','新日期','新時間','學生','新課程','新老師']); const out=[];
+  if(legacyHr>=0){ const h=hmap(rows[legacyHr]); for(let i=legacyHr+1;i<rows.length;i++){ const r=rows[i]||[],id=str(r[h['調課ID']]); if(!id)continue; if(h['確認']!==undefined&&norm(r[h['確認']])!=='是')continue; out.push({id,fixedId:str(r[h['原固定課表ID']]),originalDate:parseDateFlexible(r[h['原日期']]),originalTime:parseTimeRange(r[h['原時間']]).start||timeKey(r[h['原時間']]),action:str(r[h['動作']]),newDate:parseDateFlexible(r[h['新日期']]),newTime:parseTimeRange(r[h['新時間']]).start||timeKey(r[h['新時間']]),student:str(r[h['學生']]),course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:str(r[h['新校區']]),note:str(r[h['備註']]),source:'調課課程'}); } }
+  else if(simpleHr>=0){ const h=hmap(rows[simpleHr]); for(let i=simpleHr+1;i<rows.length;i++){ const r=rows[i]||[],student=str(r[h['學生']]); if(!student)continue; const d=parseDateFlexible(r[h['原日期']]),t=parseTimeRange(r[h['原時間']]).start||timeKey(r[h['原時間']]); if(!d||!t)continue; out.push({id:'',fixedId:'',originalDate:d,originalTime:t,action:str(r[h['動作']]),newDate:parseDateFlexible(r[h['新日期']]),newTime:parseTimeRange(r[h['新時間']]).start||timeKey(r[h['新時間']]),student,course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:'',note:'',source:'調課課程'}); } }
+  const cr=findHeaderRow(correctionRows,CORRECTION_HEADERS); if(cr>=0){ const h=hmap(correctionRows[cr]); for(let i=cr+1;i<correctionRows.length;i++){ const r=correctionRows[i]||[],student=str(r[h['學生']]); if(!student)continue; const d=parseDateFlexible(r[h['日期']]),t=parseTimeRange(r[h['原時間']]).start||timeKey(r[h['原時間']]); if(!d||!t)continue; out.push({id:'CORR-'+(i+1),fixedId:'',originalDate:d,originalTime:t,action:str(r[h['校正動作']]),newDate:d,newTime:parseTimeRange(r[h['新時間']]).start||timeKey(r[h['新時間']]),student,course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:'',note:str(r[h['備註']]),source:'課程校正'}); } }
   return out;
 }
 function parseContacts(rows){
@@ -246,67 +248,19 @@ function parseReminderRows(rows){
 }
 
 function buildRows(fixed, adjusts, fromDate, days){
-  const out=[]; const adjustByDate=new Map();
-  for(const a of adjusts){
-    if(!a.newDate && !a.originalDate) continue;
-    if(a.originalDate){
-      const key=`${a.fixedId}|${a.originalDate}`; if(!adjustByDate.has(key)) adjustByDate.set(key,[]); adjustByDate.get(key).push(a);
-    }
-  }
+  const out=[],byKey=new Map();
+  for(const a of adjusts){ if(!a.originalDate)continue; const k=a.originalDate+'|'+compact(a.student)+'|'+a.originalTime; if(!byKey.has(k))byKey.set(k,[]); byKey.get(k).push(a); }
   const toDate=addDays(fromDate,days-1);
-  for(let d=fromDate; d<=toDate; d=addDays(d,1)){
-    const wd=weekdayLabel(d);
-    for(const f of fixed){
-      if(f.until && /^\d{4}-\d{2}-\d{2}$/.test(f.until) && d>f.until) continue;
-      if(norm(f.weekday)!==norm(wd)) continue;
-      const base={date:d,weekday:wd,time:f.time,student:f.student,course:f.course,teacher:f.teacher,site:f.site,source:'固定課表',fixedId:f.id,adjustId:'',adjustResult:'無',note:f.note||'',template:f.template||''};
-      const key=`${f.id}|${d}`; const adj=adjustByDate.get(key)||[];
-      if(adj.length){
-        let handled=false;
-        for(const a of adj){
-          const action=norm(a.action);
-          if(action==='取消' || action==='停課') { out.push({...base,source:'調課課程',adjustId:a.id,adjustResult:'取消',note:a.note||'調課取消'}); handled=true; continue; }
-          if(action==='改課' || action==='調課' || action==='移課'){
-            const nd=a.newDate||d; const nt=a.newTime||f.time;
-            out.push({...base,date:nd,weekday:weekdayLabel(nd),time:nt,student:a.student||f.student,course:a.course||f.course,teacher:a.teacher||f.teacher,site:a.site||f.site,source:'調課課程',fixedId:f.id,adjustId:a.id,adjustResult:'已調課',note:a.note||''});
-            handled=true;
-          }
-        }
-        if(!handled) out.push(base);
-      } else {
-        out.push(base);
-      }
-    }
-  }
-  for(const a of adjusts){
-    if(!a.newDate || a.originalDate) continue;
-    if(a.action && /取消|停課/.test(a.action)) continue;
-    if(a.newDate < fromDate || a.newDate > toDate) continue;
-    const fixedBase = fixed.find(x=>x.id===a.fixedId);
-    const action = norm(a.action);
-    const isAdd = /新增|補課|體驗/.test(action) || !a.fixedId;
-    if(!isAdd) continue;
-    const student = a.student || fixedBase?.student || '';
-    const course = a.course || fixedBase?.course || '';
-    const teacher = a.teacher || fixedBase?.teacher || '';
-    const site = a.site || fixedBase?.site || '';
-    if(!student || !a.newTime) continue;
-    out.push({
-      date:a.newDate, weekday:weekdayLabel(a.newDate), time:a.newTime || fixedBase?.time || '',
-      student, course, teacher, site, source:'調課課程', fixedId:fixedBase?.id || '',
-      adjustId:a.id, adjustResult:'新增調課', note:a.note||'', template:fixedBase?.template || ''
-    });
-  }
-  const seen=new Set(); const final=[];
-  for(const x of out.sort((a,b)=>a.date.localeCompare(b.date)||a.time.localeCompare(b.time)||a.student.localeCompare(b.student))){
-    const key=[x.date,x.time,x.student,x.course,x.teacher,x.site,x.fixedId,x.adjustId,x.adjustResult].join('|');
-    if(seen.has(key)) continue; seen.add(key);
-    const courseId=x.adjustId ? `${x.fixedId}-${x.date}-${x.adjustId}` : `${x.fixedId}-${x.date}`;
-    final.push([courseId,x.date,x.weekday,x.time,x.student,x.course,x.teacher,x.site,x.source,x.fixedId,x.adjustId,x.adjustResult,x.note||'']);
-  }
-  return final;
+  for(let d=fromDate;d<=toDate;d=addDays(d,1)){ const wd=weekdayLabel(d); for(const f of fixed){
+    if(f.until&&/^\d{4}-\d{2}-\d{2}$/.test(f.until)&&d>f.until)continue; if(norm(f.weekday)!==norm(wd))continue;
+    const base={date:d,weekday:wd,time:f.time,student:f.student,course:f.course,teacher:f.teacher,site:f.site,source:'固定課表',fixedId:f.id,adjustId:'',adjustResult:'無',note:f.note||'',template:f.template||''};
+    const k=d+'|'+compact(f.student)+'|'+f.time,adj=byKey.get(k)||[]; let handled=false;
+    for(const a of adj){ const action=norm(a.action); if(action==='取消'||action==='停課'||/請假/.test(action)){out.push({...base,source:a.source||'調課課程',adjustId:a.id,adjustResult:'取消',note:a.note||'取消'});handled=true;continue;} if(/改時間|改課|調課|移課/.test(action)){const nd=a.newDate||d,nt=a.newTime||f.time;out.push({...base,date:nd,weekday:weekdayLabel(nd),time:nt,student:a.student||f.student,course:a.course||f.course,teacher:a.teacher||f.teacher,site:a.site||f.site,source:a.source||'調課課程',fixedId:f.id,adjustId:a.id||f.id+'-'+d,adjustResult:'已調課',note:a.note||''});handled=true;}}
+    if(!handled)out.push(base);
+  }}
+  for(const a of adjusts){ if(!a.newDate||a.originalDate||/取消|停課/.test(a.action))continue; if(a.newDate<fromDate||a.newDate>toDate)continue; const fb=fixed.find(x=>x.id===a.fixedId),isAdd=/新增|補課|體驗/.test(a.action)||!a.fixedId; if(!isAdd||!a.newTime)continue; const student=a.student||fb?.student||''; if(!student)continue; out.push({date:a.newDate,weekday:weekdayLabel(a.newDate),time:a.newTime,student,course:a.course||fb?.course||'',teacher:a.teacher||fb?.teacher||'',site:a.site||fb?.site||'',source:a.source||'調課課程',fixedId:fb?.id||'',adjustId:a.id||'NEW-'+a.newDate+'-'+compact(student),adjustResult:'新增調課',note:a.note||'',template:fb?.template||''}); }
+  const seen=new Set(),final=[]; for(const x of out.sort((a,b)=>a.date.localeCompare(b.date)||a.time.localeCompare(b.time)||a.student.localeCompare(b.student))){const key=[x.date,x.time,x.student,x.course,x.teacher,x.site,x.fixedId,x.adjustId,x.adjustResult].join('|');if(seen.has(key))continue;seen.add(key);const courseId=x.adjustId?(x.fixedId||'ADJ')+'-'+x.date+'-'+x.adjustId:x.fixedId+'-'+x.date;final.push([courseId,x.date,x.weekday,x.time,x.student,x.course,x.teacher,x.site,x.source,x.fixedId,x.adjustId,x.adjustResult,x.note||'']);} return final;
 }
-
 async function writeActual(rows){
   await retry('clear 實際課程',()=>sheets.spreadsheets.values.clear({spreadsheetId:SHEET_ID,range:`${qsheet('實際課程')}!A3:M`,requestBody:{}}));
   if(!rows.length) return;
@@ -660,9 +614,10 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
 async function build({fromDate=todayKey(),days=DEFAULT_DAYS}={}){
   if(!/^\d{4}-\d{2}-\d{2}$/.test(fromDate)) throw new Error('fromDate 必須是 YYYY-MM-DD');
   await ensureSheet('課程提醒');
-  const [settingsRows,fixedRows,adjustRows,oldActualRows,contactRows,templateRows,reminderRows] = await readSheets();
+  await ensureSheetHeaders('課程校正',CORRECTION_HEADERS);
+  const [settingsRows,fixedRows,adjustRows,correctionRows,oldActualRows,contactRows,templateRows,reminderRows] = await readSheets();
   const settings=parseSettings(settingsRows);
-  const fixed=parseFixed(fixedRows); const adjusts=parseAdjust(adjustRows); const contacts=parseContacts(contactRows); const templates=parseTemplates(templateRows);
+  const fixed=parseFixed(fixedRows); const adjusts=parseAdjust(adjustRows,correctionRows); const contacts=parseContacts(contactRows); const templates=parseTemplates(templateRows);
   const fixedTemplateByIdInput=fixed;
   const actual=buildRows(fixed,adjusts,fromDate,days);
   await writeActual(actual);
