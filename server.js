@@ -446,7 +446,12 @@ function makeReminderRows(actual, contacts, templates, settings, fixedTemplateBy
     const dateLabel=c.date.replaceAll('-','/');
 
     if(settings.parentNotify==='是'){
-      for(const person of contacts.filter(x=>x.role==='家長' && includesStudent(x.related,c.student))){
+      // 團班可能同時包含多位學生；家長匹配必須逐一拆開學生姓名，
+      // 否則「葉依柔、陳翊森」會被當成單一姓名，導致兩位學生的家長都收不到通知。
+      const studentMembers = normalizeMemberList(c.student);
+      const parentStudents = studentMembers.length ? studentMembers : [c.student];
+      for(const studentMember of parentStudents){
+        for(const person of contacts.filter(x=>x.role==='家長' && includesStudent(x.related,studentMember))){
         const preferred = fixedTemplateById.get(c.fixedId) || '';
         const template=chooseTemplate(templates,'家長',preferred);
         raw.push({
@@ -459,7 +464,8 @@ function makeReminderRows(actual, contacts, templates, settings, fixedTemplateBy
           role:'家長',
           recipient:person.name,
           userId:person.userId,
-          student:c.student,
+          // 家長提醒使用單一學生名稱；課程名稱仍保留原本的團班名稱。
+          student:studentMember,
           course:c.course,
           teacher:c.teacher,
           site:c.site,
@@ -467,6 +473,7 @@ function makeReminderRows(actual, contacts, templates, settings, fixedTemplateBy
           dateLabel,
           confirm:requireConfirm?'否':'是'
         });
+        }
       }
     }
 
