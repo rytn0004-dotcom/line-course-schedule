@@ -385,14 +385,38 @@ function buildRows(fixed, adjusts, fromDate, days){
       const adj=byKey.get(k)||[];
       let handled=false;
 
-      // 明確的整日停課優先於一般固定課表。
-      if(wide?.cancel){
+      // 個別校正優先於整日規則。
+      // 例如：10/10 整日調課到 10/9，但小明另填「10/10 小明 12:00 調到 10/11」，
+      // 小明就不走 10/9 的整日搬課，而是直接使用個別校正結果。
+      if(adj.length){
+        for(const a of adj){
+          const action=norm(a.action);
+          if(action==='取消'||action==='停課'||/請假/.test(action)){
+            out.push({...base,source:a.source||'調課課程',adjustId:a.id||f.id+'-'+d,adjustResult:'取消',note:a.note||'取消'});
+            handled=true;
+            break;
+          }
+          if(/改時間|改課|調課|移課/.test(action)){
+            const nd=a.newDate||d,nt=a.newTime||f.time;
+            out.push({
+              ...base,date:nd,weekday:weekdayLabel(nd),time:nt,
+              student:a.student||f.student,course:a.course||f.course,teacher:a.teacher||f.teacher,
+              site:a.site||f.site,source:a.source||'調課課程',fixedId:f.id,
+              adjustId:a.id||f.id+'-'+d,adjustResult:'已調課',note:a.note||''
+            });
+            handled=true;
+            break;
+          }
+        }
+      }
+
+      // 沒有個別例外時，才套用整日規則。
+      if(!handled && wide?.cancel){
         out.push({...base,source:'課程校正',adjustId:'DATE-CANCEL-'+d,adjustResult:'取消',note:'整日停課'});
         handled=true;
       }
 
-      // 整日搬課：來源日期的每一門課都搬到指定日期。
-      if(wide?.moves?.length){
+      if(!handled && wide?.moves?.length){
         for(const a of wide.moves){
           const nd=a.newDate;
           if(nd<fromDate||nd>toDate)continue;
@@ -405,24 +429,6 @@ function buildRows(fixed, adjusts, fromDate, days){
           });
         }
         handled=true;
-      }
-
-      // 若同一天同時存在「整日停課」與「整日調課」，仍保留取消原課，
-      // 並另外產生搬到新日期的課程，讓實際課程完整呈現變更軌跡。
-      if(!handled){
-        for(const a of adj){
-          const action=norm(a.action);
-          if(action==='取消'||action==='停課'||/請假/.test(action)){
-            out.push({...base,source:a.source||'調課課程',adjustId:a.id,adjustResult:'取消',note:a.note||'取消'});
-            handled=true;
-            continue;
-          }
-          if(/改時間|改課|調課|移課/.test(action)){
-            const nd=a.newDate||d,nt=a.newTime||f.time;
-            out.push({...base,date:nd,weekday:weekdayLabel(nd),time:nt,student:a.student||f.student,course:a.course||f.course,teacher:a.teacher||f.teacher,site:a.site||f.site,source:a.source||'調課課程',fixedId:f.id,adjustId:a.id||f.id+'-'+d,adjustResult:'已調課',note:a.note||''});
-            handled=true;
-          }
-        }
       }
 
       if(!handled)out.push(base);
