@@ -323,6 +323,28 @@ function parseAdjust(rows, correctionRows=[]){
           const text=line;
 
           // 「9/25p調10/3b」或「10/10(六)調10/9b」
+          // 「1830-2000昀瑄(10/9 0900-1030)」：同一天只調整時間。
+          // 括號內日期是課程日期，括號內時段是調整後時段。
+          const timeMoveRe=/(\\d{1,2}:?\\d{2})\\s*[-~～至]\\s*(\\d{1,2}:?\\d{2})\\s*([^()（）]+?)\\s*[（(]\\s*(\\d{4}[-\\/.]\\d{1,2}[-\\/.]\\d{1,2}|\\d{1,2}[-\\/.]\\d{1,2})\\s+(\\d{1,2}:?\\d{2})\\s*[-~～至]\\s*(\\d{1,2}:?\\d{2})\\s*[）)]/;
+          const timeMoveMatch=text.match(timeMoveRe);
+          if(timeMoveMatch){
+            const moveDate=parseDateFlexible(timeMoveMatch[4]);
+            const moveStudent=str(timeMoveMatch[3]);
+            const originalStart=timeKey(timeMoveMatch[1]);
+            const originalEnd=timeKey(timeMoveMatch[2]);
+            const moveStart=timeKey(timeMoveMatch[5]);
+            const moveEnd=timeKey(timeMoveMatch[6]);
+            if(moveDate && moveStudent && originalStart && originalEnd && moveStart && moveEnd){
+              pushCorrection({
+                id:'CORR-NOTE-TIME-'+(i+1)+'-'+moveDate+'-'+compact(moveStudent)+'-'+originalStart+'-'+moveStart,
+                fixedId:'',originalDate:moveDate,originalTime:originalStart,action:'改時間',
+                newDate:moveDate,newTime:moveStart,student:moveStudent,
+                course:'',teacher:'',site:'',
+                note:'來源：課程校正備註；'+line+'（原時段 '+originalStart+'-'+originalEnd+'；新時段 '+moveStart+'-'+moveEnd+'）',source:'課程校正'
+              });
+            }
+          }
+
           const dateMoveRe=/(\d{1,2})\/(\d{1,2})(?:\([^)]*\))?[^()]*?調\s*(\d{1,2})\/(\d{1,2})/g;
           let m;
           while((m=dateMoveRe.exec(text))){
