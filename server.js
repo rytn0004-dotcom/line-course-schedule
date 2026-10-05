@@ -96,7 +96,18 @@ function timeKey(v){
 }
 function parseTimeRange(v){ const m=str(v).replace(/\s+/g,'').match(/(\d{1,2}:?\d{2})[-~～至](\d{1,2}:?\d{2})/); return m?{start:timeKey(m[1]),end:timeKey(m[2])}:{start:'',end:''}; }
 function extractStudentFromTime(v){ const m=str(v).match(/(?:\d{1,2}:?\d{2})\s*[-~～至]\s*(?:\d{1,2}:?\d{2})\s*([^()（）]*)/); return m?str(m[1]):''; }
-function parseDateFlexible(v, fallbackYear=new Date().toLocaleString('en-US',{timeZone:TZ,year:'numeric'})){ if(typeof v==='number')return dateKey(v); const x=str(v),full=dateKey(x); if(/^\d{4}-\d{2}-\d{2}$/.test(full))return full; const m=x.match(/^(\d{1,2})[\/.\-](\d{1,2})$/); return m?fallbackYear+'-'+String(+m[1]).padStart(2,'0')+'-'+String(+m[2]).padStart(2,'0'):full; }
+function parseDateFlexible(v, fallbackYear=new Date().toLocaleString('en-US',{timeZone:TZ,year:'numeric'})){ if(typeof v==='number')return dateKey(v); const x=str(v),full=dateKey(x); if(/^\d{4}-\d{2}-\d{2}$/.test(full))return full; const m=x.match(/^(\d{1,2})[\/\.\-](\d{1,2})$/); return m?fallbackYear+'-'+String(+m[1]).padStart(2,'0')+'-'+String(+m[2]).padStart(2,'0'):full; }
+function extractMoveDate(action, originalDate){
+  const s=str(action).replace(/[\s　]+/g,'');
+  const patterns=[
+    /整日(?:調課|移課|改課)(?:到|至)?[:：]?(\d{4}[-\/.]\d{1,2}[-\/.]\d{1,2})/,
+    /整日(?:調課|移課|改課)(?:到|至)?[:：]?(\d{1,2}[-\/.]\d{1,2})/,
+    /(?:調|移|改)(?:到|至)[:：]?(\d{4}[-\/.]\d{1,2}[-\/.]\d{1,2})/,
+    /(?:調|移|改)(?:到|至)[:：]?(\d{1,2}[-\/.]\d{1,2})/
+  ];
+  for(const re of patterns){ const m=s.match(re); if(m) return parseDateFlexible(m[1]); }
+  return '';
+}
 function todayKey(){
   const p=new Intl.DateTimeFormat('en-US',{timeZone:TZ,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());
   const g=t=>p.find(x=>x.type===t)?.value;
@@ -254,12 +265,8 @@ function parseAdjust(rows, correctionRows=[]){
 
       // 先保留原本「日期／學生／原時間／校正動作」欄位的正式填法。
       if(d && (student || /整日/.test(action)) && (t || /整日/.test(action))){
-        let newDate=d;
-        const dmIso=action.match(/(?:調|改|移)(?:到|至)?\s*(\d{4}-\d{1,2}-\d{1,2})/);
-        const dm=action.match(/(?:調|改|移)(?:到|至)?\s*(\d{1,2})[\/.-](\d{1,2})/);
-        if(dmIso) newDate=parseDateFlexible(dmIso[1]);
-        else if(dm) newDate=parseDateFlexible(dm[1]+'/'+dm[2]);
-        else {
+        let newDate=extractMoveDate(action,d) || d;
+        if(newDate===d){
           const noteMove=note.match(/(?:→|->|至|到)\s*(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})/);
           if(noteMove) newDate=parseDateFlexible(noteMove[1]);
         }
@@ -495,10 +502,14 @@ function buildRows(fixed, adjusts, fromDate, days){
 
     // 「整日調課到10/9」：將來源日期的全部固定課程搬到指定日期。
     if(/整日.*(?:調課|移課|改課)/.test(action)){
-      const nd=a.newDate;
-      if(nd){
+      // 整日調課的目的日期以「校正動作」為最高優先來源。
+      // 例如：2026-10-10 +「整日調課到10/9」=> 2026-10-09。
+      const nd=extractMoveDate(a.action,a.originalDate) || a.newDate;
+      if(nd && nd!==a.originalDate){
         if(!dateWide.has(a.originalDate))dateWide.set(a.originalDate,{cancel:false,moves:[]});
         dateWide.get(a.originalDate).moves.push({...a,newDate:nd});
+      }else if(nd===a.originalDate){
+        console.warn('Ignored invalid same-date whole-day move:',a.originalDate,a.action,a.note||'');
       }
       continue;
     }
@@ -556,7 +567,7 @@ function buildRows(fixed, adjusts, fromDate, days){
       if(!handled && wide?.moves?.length){
         for(const a of wide.moves){
           const nd=a.newDate;
-          if(nd<fromDate||nd>toDate)continue;
+          if(!nd || nd===d || nd<fromDate||nd>toDate)continue;
           out.push({
             ...base,date:nd,weekday:weekdayLabel(nd),time:a.newTime||f.time,
             student:a.student||f.student,course:a.course||f.course,teacher:a.teacher||f.teacher,
