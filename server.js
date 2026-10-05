@@ -222,27 +222,107 @@ function parseAdjust(rows, correctionRows=[]){
   const cr=findHeaderRow(correctionRows,CORRECTION_HEADERS);
   if(cr>=0){
     const h=hmap(correctionRows[cr]);
+    const parsedCorrectionKeys=new Set();
+
+    // 課程校正除了原本的欄位填寫方式，也支援「只貼備註」。
+    // 備註可貼單行或多行，例如：
+    // 1030-1200沄臻(10/10(六)調10/9b)
+    // 週六1230-1400尚哲(10/3理化加課)
+    // 星期六1030-1200嘉恆(9/25p調10/3b)(10/3嘉恆請假)
+    function pushCorrection(item){
+      const key=[
+        item.originalDate||'',
+        compact(item.student||''),
+        item.originalTime||'',
+        item.action||'',
+        item.newDate||'',
+        item.newTime||'',
+        item.course||''
+      ].join('|');
+      if(parsedCorrectionKeys.has(key)) return;
+      parsedCorrectionKeys.add(key);
+      out.push(item);
+    }
+
     for(let i=cr+1;i<correctionRows.length;i++){
       const r=correctionRows[i]||[];
       const student=str(r[h['學生']]);
       const d=parseDateFlexible(r[h['日期']]);
       const t=parseTimeRange(r[h['原時間']]).start||timeKey(r[h['原時間']]);
       const action=str(r[h['校正動作']]);
-      if(!d)continue;
-      if(!student && !/整日/.test(action))continue;
-      if(!t && !/整日/.test(action))continue;
+      const note=str(r[h['備註']]);
 
-      // 支援「調到10/9」「改到10/9」這種不需要再增加欄位的日期調課寫法。
-      let newDate=d;
-      const dm=action.match(/(?:調|改|移)(?:到|至)?\s*(\d{1,2})[\/.-](\d{1,2})/);
-      if(dm) newDate=parseDateFlexible(dm[1]+'/'+dm[2]);
+      // 先保留原本「日期／學生／原時間／校正動作」欄位的正式填法。
+      if(d && (student || /整日/.test(action)) && (t || /整日/.test(action))){
+        let newDate=d;
+        const dm=action.match(/(?:調|改|移)(?:到|至)?\s*(\d{1,2})[\/.-](\d{1,2})/);
+        if(dm) newDate=parseDateFlexible(dm[1]+'/'+dm[2]);
 
-      out.push({
-        id:'CORR-'+(i+1),fixedId:'',originalDate:d,originalTime:t,action,newDate,
-        newTime:parseTimeRange(r[h['新時間']]).start||timeKey(r[h['新時間']]),
-        student,course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:'',
-        note:str(r[h['備註']]),source:'課程校正'
-      });
+        pushCorrection({
+          id:'CORR-'+(i+1),fixedId:'',originalDate:d,originalTime:t,action,newDate,
+          newTime:parseTimeRange(r[h['新時間']]).start||timeKey(r[h['新時間']]),
+          student,course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:'',
+          note,source:'課程校正'
+        });
+      }
+
+      // 新功能：備註欄直接貼自然文字即可。
+      // 一個儲存格內可以放多行，每行獨立解析；不會修改固定課表。
+      if(note){
+        const lines=note.split(/\r?\n/).map(str).filter(Boolean);
+        for(const line of lines){
+          const timeMatch=line.match(/(\d{1,2}:?\d{2})\s*[-~～至]\s*(\d{1,2}:?\d{2})\s*([^()（）]*)/);
+          const inlineTime=timeMatch ? timeKey(timeMatch[1]) : t;
+          const inlineStudent=timeMatch ? str(timeMatch[3]) : student;
+          const text=line;
+
+          // 「9/25p調10/3b」或「10/10(六)調10/9b」
+          const dateMoveRe=/(\d{1,2})\/(\d{1,2})(?:\([^)]*\))?[^()]*?調\s*(\d{1,2})\/(\d{1,2})/g;
+          let m;
+          while((m=dateMoveRe.exec(text))){
+            const from=parseDateFlexible(m[1]+'/'+m[2]);
+            const to=parseDateFlexible(m[3]+'/'+m[4]);
+            if(!inlineStudent || !inlineTime) continue;
+            pushCorrection({
+              id:'CORR-NOTE-'+(i+1)+'-'+from+'-'+to+'-'+compact(inlineStudent),
+              fixedId:'',originalDate:from,originalTime:inlineTime,action:'調課',
+              newDate:to,newTime:inlineTime,student:inlineStudent,
+              course:'',teacher:'',site:'',
+              note:'來源：課程校正備註；'+line,source:'課程校正'
+            });
+          }
+
+          // 「10/3嘉恆請假」
+          const leaveRe=/(\d{1,2})\/(\d{1,2})[^()]*請假/g;
+          while((m=leaveRe.exec(text))){
+            const from=parseDateFlexible(m[1]+'/'+m[2]);
+            if(!inlineStudent || !inlineTime) continue;
+            pushCorrection({
+              id:'CORR-NOTE-LEAVE-'+(i+1)+'-'+from+'-'+compact(inlineStudent),
+              fixedId:'',originalDate:from,originalTime:inlineTime,action:'請假',
+              newDate:from,newTime:inlineTime,student:inlineStudent,
+              course:'',teacher:'',site:'',
+              note:'來源：課程校正備註；'+line,source:'課程校正'
+            });
+          }
+
+          // 「10/3理化加課」：建立一筆真正的新增課程。
+          // 如果沒有寫課程名稱（例如「10/3加課」），則沿用正式欄位的「新課程」。
+          const addRe=/(\d{1,2})\/(\d{1,2})\s*([^()（）]*?)\s*加課/g;
+          while((m=addRe.exec(text))){
+            const newDate=parseDateFlexible(m[1]+'/'+m[2]);
+            const course=str(m[3]) || str(r[h['新課程']]);
+            if(!inlineStudent || !inlineTime) continue;
+            pushCorrection({
+              id:'CORR-NOTE-ADD-'+(i+1)+'-'+newDate+'-'+compact(inlineStudent)+'-'+inlineTime,
+              fixedId:'',originalDate:'',originalTime:'',action:'加課',
+              newDate,newTime:inlineTime,student:inlineStudent,
+              course,teacher:str(r[h['新老師']]),site:'',
+              note:'來源：課程校正備註；'+line,source:'課程校正'
+            });
+          }
+        }
+      }
     }
   }
   return out;
