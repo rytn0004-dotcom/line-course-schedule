@@ -197,10 +197,105 @@ function parseFixed(rows){
 }
 function parseAdjust(rows, correctionRows=[]){
   const legacyHr=findHeaderRow(rows,['調課ID','原固定課表ID','原日期','原時間','動作','新日期','新時間','學生','確認']);
-  const simpleHr=findHeaderRow(rows,['原日期','原時間','動作','新日期','新時間','學生','新課程','新老師']); const out=[];
-  if(legacyHr>=0){ const h=hmap(rows[legacyHr]); for(let i=legacyHr+1;i<rows.length;i++){ const r=rows[i]||[],id=str(r[h['調課ID']]); if(!id)continue; if(h['確認']!==undefined&&norm(r[h['確認']])!=='是')continue; out.push({id,fixedId:str(r[h['原固定課表ID']]),originalDate:parseDateFlexible(r[h['原日期']]),originalTime:parseTimeRange(r[h['原時間']]).start||timeKey(r[h['原時間']]),action:str(r[h['動作']]),newDate:parseDateFlexible(r[h['新日期']]),newTime:parseTimeRange(r[h['新時間']]).start||timeKey(r[h['新時間']]),student:str(r[h['學生']]),course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:str(r[h['新校區']]),note:str(r[h['備註']]),source:'調課課程'}); } }
-  else if(simpleHr>=0){ const h=hmap(rows[simpleHr]); for(let i=simpleHr+1;i<rows.length;i++){ const r=rows[i]||[],student=str(r[h['學生']]); if(!student)continue; const d=parseDateFlexible(r[h['原日期']]),t=parseTimeRange(r[h['原時間']]).start||timeKey(r[h['原時間']]); if(!d||!t)continue; out.push({id:'',fixedId:'',originalDate:d,originalTime:t,action:str(r[h['動作']]),newDate:parseDateFlexible(r[h['新日期']]),newTime:parseTimeRange(r[h['新時間']]).start||timeKey(r[h['新時間']]),student,course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:'',note:'',source:'調課課程'}); } }
-  const cr=findHeaderRow(correctionRows,CORRECTION_HEADERS); if(cr>=0){ const h=hmap(correctionRows[cr]); for(let i=cr+1;i<correctionRows.length;i++){ const r=correctionRows[i]||[],student=str(r[h['學生']]); if(!student)continue; const d=parseDateFlexible(r[h['日期']]),t=parseTimeRange(r[h['原時間']]).start||timeKey(r[h['原時間']]); if(!d||!t)continue; out.push({id:'CORR-'+(i+1),fixedId:'',originalDate:d,originalTime:t,action:str(r[h['校正動作']]),newDate:d,newTime:parseTimeRange(r[h['新時間']]).start||timeKey(r[h['新時間']]),student,course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:'',note:str(r[h['備註']]),source:'課程校正'}); } }
+  const simpleHr=findHeaderRow(rows,['原日期','原時間','動作','新日期','新時間','學生','新課程','新老師']);
+  const out=[];
+  if(legacyHr>=0){
+    const h=hmap(rows[legacyHr]);
+    for(let i=legacyHr+1;i<rows.length;i++){
+      const r=rows[i]||[],id=str(r[h['調課ID']]); if(!id)continue;
+      if(h['確認']!==undefined&&norm(r[h['確認']])!=='是')continue;
+      out.push({id,fixedId:str(r[h['原固定課表ID']]),originalDate:parseDateFlexible(r[h['原日期']]),originalTime:parseTimeRange(r[h['原時間']]).start||timeKey(r[h['原時間']]),action:str(r[h['動作']]),newDate:parseDateFlexible(r[h['新日期']]),newTime:parseTimeRange(r[h['新時間']]).start||timeKey(r[h['新時間']]),student:str(r[h['學生']]),course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:str(r[h['新校區']]),note:str(r[h['備註']]),source:'調課課程'});
+    }
+  } else if(simpleHr>=0){
+    const h=hmap(rows[simpleHr]);
+    for(let i=simpleHr+1;i<rows.length;i++){
+      const r=rows[i]||[],student=str(r[h['學生']]);
+      const d=parseDateFlexible(r[h['原日期']]),t=parseTimeRange(r[h['原時間']]).start||timeKey(r[h['原時間']]);
+      const action=str(r[h['動作']]);
+      if(!d)continue;
+      if(!student && !/整日/.test(action))continue;
+      if(!t && !/整日/.test(action))continue;
+      out.push({id:'',fixedId:'',originalDate:d,originalTime:t,action,newDate:parseDateFlexible(r[h['新日期']]),newTime:parseTimeRange(r[h['新時間']]).start||timeKey(r[h['新時間']]),student,course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:'',note:'',source:'調課課程'});
+    }
+  }
+
+  const cr=findHeaderRow(correctionRows,CORRECTION_HEADERS);
+  if(cr>=0){
+    const h=hmap(correctionRows[cr]);
+    for(let i=cr+1;i<correctionRows.length;i++){
+      const r=correctionRows[i]||[];
+      const student=str(r[h['學生']]);
+      const d=parseDateFlexible(r[h['日期']]);
+      const t=parseTimeRange(r[h['原時間']]).start||timeKey(r[h['原時間']]);
+      const action=str(r[h['校正動作']]);
+      if(!d)continue;
+      if(!student && !/整日/.test(action))continue;
+      if(!t && !/整日/.test(action))continue;
+
+      // 支援「調到10/9」「改到10/9」這種不需要再增加欄位的日期調課寫法。
+      let newDate=d;
+      const dm=action.match(/(?:調|改|移)(?:到|至)?\s*(\d{1,2})[\/.-](\d{1,2})/);
+      if(dm) newDate=parseDateFlexible(dm[1]+'/'+dm[2]);
+
+      out.push({
+        id:'CORR-'+(i+1),fixedId:'',originalDate:d,originalTime:t,action,newDate,
+        newTime:parseTimeRange(r[h['新時間']]).start||timeKey(r[h['新時間']]),
+        student,course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:'',
+        note:str(r[h['備註']]),source:'課程校正'
+      });
+    }
+  }
+  return out;
+}
+
+function parseInlineAdjustments(fixed){
+  const out=[];
+  for(const f of fixed){
+    const raw=str(f.rawTime);
+    const note=str(f.note);
+    const text=raw+' '+note;
+
+    // 例：1030-1200沄臻(10/10(六)調10/9b)
+    // 只處理明確的「日期調到另一日期」，時間沿用原課時間。
+    const dateMoveRe=/(\d{1,2})\/(\d{1,2})(?:\([^)]*\))?[^()]*?調\s*(\d{1,2})\/(\d{1,2})/g;
+    let m;
+    while((m=dateMoveRe.exec(text))){
+      const from=parseDateFlexible(m[1]+'/'+m[2]);
+      const to=parseDateFlexible(m[3]+'/'+m[4]);
+      out.push({
+        id:'INLINE-'+f.id+'-'+from+'-'+to,
+        fixedId:f.id,originalDate:from,originalTime:f.time,action:'調課',
+        newDate:to,newTime:f.time,student:f.student,course:f.course,teacher:f.teacher,
+        site:f.site,note:'來源：固定課表備註；'+m[0],source:'固定課表備註'
+      });
+    }
+
+    // 例：(9/26改1000-1200)
+    const timeMoveRe=/(\d{1,2})\/(\d{1,2})[^()]*?改\s*(\d{3,4})(?:\s*[-~～至]\s*(\d{3,4}))?/g;
+    while((m=timeMoveRe.exec(text))){
+      const from=parseDateFlexible(m[1]+'/'+m[2]);
+      const nt=timeKey(m[3]);
+      if(!nt)continue;
+      out.push({
+        id:'INLINE-TIME-'+f.id+'-'+from+'-'+nt,
+        fixedId:f.id,originalDate:from,originalTime:f.time,action:'改時間',
+        newDate:from,newTime:nt,student:f.student,course:f.course,teacher:f.teacher,
+        site:f.site,note:'來源：固定課表備註；'+m[0],source:'固定課表備註'
+      });
+    }
+
+    // 例：(10/3嘉恆請假)；只在明確包含「請假」時取消該日期的該學生課程。
+    const leaveRe=/(\d{1,2})\/(\d{1,2})[^()]*請假/g;
+    while((m=leaveRe.exec(text))){
+      const from=parseDateFlexible(m[1]+'/'+m[2]);
+      out.push({
+        id:'INLINE-LEAVE-'+f.id+'-'+from,
+        fixedId:f.id,originalDate:from,originalTime:f.time,action:'請假',
+        newDate:from,newTime:f.time,student:f.student,course:f.course,teacher:f.teacher,
+        site:f.site,note:'來源：固定課表備註；'+m[0],source:'固定課表備註'
+      });
+    }
+  }
   return out;
 }
 function parseContacts(rows){
@@ -248,18 +343,111 @@ function parseReminderRows(rows){
 }
 
 function buildRows(fixed, adjusts, fromDate, days){
-  const out=[],byKey=new Map();
-  for(const a of adjusts){ if(!a.originalDate)continue; const k=a.originalDate+'|'+compact(a.student)+'|'+a.originalTime; if(!byKey.has(k))byKey.set(k,[]); byKey.get(k).push(a); }
+  const out=[],byKey=new Map(),dateWide=new Map();
+
+  for(const a of adjusts){
+    if(!a.originalDate)continue;
+    const action=norm(a.action);
+
+    // 「整日停課」：只要日期符合，就取消當天全部固定課程。
+    if(/整日.*(?:停課|取消)/.test(action)){
+      if(!dateWide.has(a.originalDate))dateWide.set(a.originalDate,{cancel:true,moves:[]});
+      dateWide.get(a.originalDate).cancel=true;
+      continue;
+    }
+
+    // 「整日調課到10/9」：將來源日期的全部固定課程搬到指定日期。
+    if(/整日.*(?:調課|移課|改課)/.test(action)){
+      const nd=a.newDate;
+      if(nd){
+        if(!dateWide.has(a.originalDate))dateWide.set(a.originalDate,{cancel:false,moves:[]});
+        dateWide.get(a.originalDate).moves.push({...a,newDate:nd});
+      }
+      continue;
+    }
+
+    const k=a.originalDate+'|'+compact(a.student)+'|'+a.originalTime;
+    if(!byKey.has(k))byKey.set(k,[]);
+    byKey.get(k).push(a);
+  }
+
   const toDate=addDays(fromDate,days-1);
-  for(let d=fromDate;d<=toDate;d=addDays(d,1)){ const wd=weekdayLabel(d); for(const f of fixed){
-    if(f.until&&/^\d{4}-\d{2}-\d{2}$/.test(f.until)&&d>f.until)continue; if(norm(f.weekday)!==norm(wd))continue;
-    const base={date:d,weekday:wd,time:f.time,student:f.student,course:f.course,teacher:f.teacher,site:f.site,source:'固定課表',fixedId:f.id,adjustId:'',adjustResult:'無',note:f.note||'',template:f.template||''};
-    const k=d+'|'+compact(f.student)+'|'+f.time,adj=byKey.get(k)||[]; let handled=false;
-    for(const a of adj){ const action=norm(a.action); if(action==='取消'||action==='停課'||/請假/.test(action)){out.push({...base,source:a.source||'調課課程',adjustId:a.id,adjustResult:'取消',note:a.note||'取消'});handled=true;continue;} if(/改時間|改課|調課|移課/.test(action)){const nd=a.newDate||d,nt=a.newTime||f.time;out.push({...base,date:nd,weekday:weekdayLabel(nd),time:nt,student:a.student||f.student,course:a.course||f.course,teacher:a.teacher||f.teacher,site:a.site||f.site,source:a.source||'調課課程',fixedId:f.id,adjustId:a.id||f.id+'-'+d,adjustResult:'已調課',note:a.note||''});handled=true;}}
-    if(!handled)out.push(base);
-  }}
-  for(const a of adjusts){ if(!a.newDate||a.originalDate||/取消|停課/.test(a.action))continue; if(a.newDate<fromDate||a.newDate>toDate)continue; const fb=fixed.find(x=>x.id===a.fixedId),isAdd=/新增|補課|體驗/.test(a.action)||!a.fixedId; if(!isAdd||!a.newTime)continue; const student=a.student||fb?.student||''; if(!student)continue; out.push({date:a.newDate,weekday:weekdayLabel(a.newDate),time:a.newTime,student,course:a.course||fb?.course||'',teacher:a.teacher||fb?.teacher||'',site:a.site||fb?.site||'',source:a.source||'調課課程',fixedId:fb?.id||'',adjustId:a.id||'NEW-'+a.newDate+'-'+compact(student),adjustResult:'新增調課',note:a.note||'',template:fb?.template||''}); }
-  const seen=new Set(),final=[]; for(const x of out.sort((a,b)=>a.date.localeCompare(b.date)||a.time.localeCompare(b.time)||a.student.localeCompare(b.student))){const key=[x.date,x.time,x.student,x.course,x.teacher,x.site,x.fixedId,x.adjustId,x.adjustResult].join('|');if(seen.has(key))continue;seen.add(key);const courseId=x.adjustId?(x.fixedId||'ADJ')+'-'+x.date+'-'+x.adjustId:x.fixedId+'-'+x.date;final.push([courseId,x.date,x.weekday,x.time,x.student,x.course,x.teacher,x.site,x.source,x.fixedId,x.adjustId,x.adjustResult,x.note||'']);} return final;
+
+  for(let d=fromDate;d<=toDate;d=addDays(d,1)){
+    const wd=weekdayLabel(d);
+    for(const f of fixed){
+      if(f.until&&/^\d{4}-\d{2}-\d{2}$/.test(f.until)&&d>f.until)continue;
+      if(norm(f.weekday)!==norm(wd))continue;
+
+      const base={date:d,weekday:wd,time:f.time,student:f.student,course:f.course,teacher:f.teacher,site:f.site,source:'固定課表',fixedId:f.id,adjustId:'',adjustResult:'無',note:f.note||'',template:f.template||''};
+      const wide=dateWide.get(d);
+      const k=d+'|'+compact(f.student)+'|'+f.time;
+      const adj=byKey.get(k)||[];
+      let handled=false;
+
+      // 明確的整日停課優先於一般固定課表。
+      if(wide?.cancel){
+        out.push({...base,source:'課程校正',adjustId:'DATE-CANCEL-'+d,adjustResult:'取消',note:'整日停課'});
+        handled=true;
+      }
+
+      // 整日搬課：來源日期的每一門課都搬到指定日期。
+      if(wide?.moves?.length){
+        for(const a of wide.moves){
+          const nd=a.newDate;
+          if(nd<fromDate||nd>toDate)continue;
+          out.push({
+            ...base,date:nd,weekday:weekdayLabel(nd),time:a.newTime||f.time,
+            student:a.student||f.student,course:a.course||f.course,teacher:a.teacher||f.teacher,
+            site:a.site||f.site,source:a.source||'課程校正',fixedId:f.id,
+            adjustId:a.id||'DATE-MOVE-'+d+'-'+nd,adjustResult:'已調課',
+            note:a.note||('整日調課：'+d+' → '+nd)
+          });
+        }
+        handled=true;
+      }
+
+      // 若同一天同時存在「整日停課」與「整日調課」，仍保留取消原課，
+      // 並另外產生搬到新日期的課程，讓實際課程完整呈現變更軌跡。
+      if(!handled){
+        for(const a of adj){
+          const action=norm(a.action);
+          if(action==='取消'||action==='停課'||/請假/.test(action)){
+            out.push({...base,source:a.source||'調課課程',adjustId:a.id,adjustResult:'取消',note:a.note||'取消'});
+            handled=true;
+            continue;
+          }
+          if(/改時間|改課|調課|移課/.test(action)){
+            const nd=a.newDate||d,nt=a.newTime||f.time;
+            out.push({...base,date:nd,weekday:weekdayLabel(nd),time:nt,student:a.student||f.student,course:a.course||f.course,teacher:a.teacher||f.teacher,site:a.site||f.site,source:a.source||'調課課程',fixedId:f.id,adjustId:a.id||f.id+'-'+d,adjustResult:'已調課',note:a.note||''});
+            handled=true;
+          }
+        }
+      }
+
+      if(!handled)out.push(base);
+    }
+  }
+
+  // 「新增／補課／體驗」仍沿用原本的新增課程機制。
+  for(const a of adjusts){
+    if(!a.newDate||a.originalDate||/取消|停課/.test(a.action))continue;
+    if(a.newDate<fromDate||a.newDate>toDate)continue;
+    const fb=fixed.find(x=>x.id===a.fixedId),isAdd=/新增|補課|體驗/.test(a.action)||!a.fixedId;
+    if(!isAdd||!a.newTime)continue;
+    const student=a.student||fb?.student||''; if(!student)continue;
+    out.push({date:a.newDate,weekday:weekdayLabel(a.newDate),time:a.newTime,student,course:a.course||fb?.course||'',teacher:a.teacher||fb?.teacher||'',site:a.site||fb?.site||'',source:a.source||'調課課程',fixedId:fb?.id||'',adjustId:a.id||'NEW-'+a.newDate+'-'+compact(student),adjustResult:'新增調課',note:a.note||'',template:fb?.template||''});
+  }
+
+  const seen=new Set(),final=[];
+  for(const x of out.sort((a,b)=>a.date.localeCompare(b.date)||a.time.localeCompare(b.time)||a.student.localeCompare(b.student))){
+    const key=[x.date,x.time,x.student,x.course,x.teacher,x.site,x.fixedId,x.adjustId,x.adjustResult].join('|');
+    if(seen.has(key))continue;
+    seen.add(key);
+    const courseId=x.adjustId?(x.fixedId||'ADJ')+'-'+x.date+'-'+x.adjustId:x.fixedId+'-'+x.date;
+    final.push([courseId,x.date,x.weekday,x.time,x.student,x.course,x.teacher,x.site,x.source,x.fixedId,x.adjustId,x.adjustResult,x.note||'']);
+  }
+  return final;
 }
 async function writeActual(rows){
   await retry('clear 實際課程',()=>sheets.spreadsheets.values.clear({spreadsheetId:SHEET_ID,range:`${qsheet('實際課程')}!A3:M`,requestBody:{}}));
@@ -617,7 +805,7 @@ async function build({fromDate=todayKey(),days=DEFAULT_DAYS}={}){
   await ensureSheetHeaders('課程校正',CORRECTION_HEADERS);
   const [settingsRows,fixedRows,adjustRows,correctionRows,oldActualRows,contactRows,templateRows,reminderRows] = await readSheets();
   const settings=parseSettings(settingsRows);
-  const fixed=parseFixed(fixedRows); const adjusts=parseAdjust(adjustRows,correctionRows); const contacts=parseContacts(contactRows); const templates=parseTemplates(templateRows);
+  const fixed=parseFixed(fixedRows); const adjusts=[...parseAdjust(adjustRows,correctionRows),...parseInlineAdjustments(fixed)]; const contacts=parseContacts(contactRows); const templates=parseTemplates(templateRows);
   const fixedTemplateByIdInput=fixed;
   const actual=buildRows(fixed,adjusts,fromDate,days);
   await writeActual(actual);
