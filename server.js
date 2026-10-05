@@ -255,8 +255,14 @@ function parseAdjust(rows, correctionRows=[]){
       // 先保留原本「日期／學生／原時間／校正動作」欄位的正式填法。
       if(d && (student || /整日/.test(action)) && (t || /整日/.test(action))){
         let newDate=d;
+        const dmIso=action.match(/(?:調|改|移)(?:到|至)?\s*(\d{4}-\d{1,2}-\d{1,2})/);
         const dm=action.match(/(?:調|改|移)(?:到|至)?\s*(\d{1,2})[\/.-](\d{1,2})/);
-        if(dm) newDate=parseDateFlexible(dm[1]+'/'+dm[2]);
+        if(dmIso) newDate=parseDateFlexible(dmIso[1]);
+        else if(dm) newDate=parseDateFlexible(dm[1]+'/'+dm[2]);
+        else {
+          const noteMove=note.match(/(?:→|->|至|到)\s*(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})/);
+          if(noteMove) newDate=parseDateFlexible(noteMove[1]);
+        }
 
         pushCorrection({
           id:'CORR-'+(i+1),fixedId:'',originalDate:d,originalTime:t,action,newDate,
@@ -264,6 +270,39 @@ function parseAdjust(rows, correctionRows=[]){
           student,course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:'',
           note,source:'課程校正'
         });
+      }
+
+      // 「整日調課／整日停課」也可以完全只寫在備註。
+      // 例如：整日調課：2026-10-10 → 2026-10-09
+      // 或：整日停課：2026-10-09
+      const wideMoveRe=/整日(?:調課|移課|改課)\s*[:：]?\s*(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})\s*(?:→|->|至|到)\s*(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})/;
+      const wideCancelRe=/整日(?:停課|取消)\s*[:：]?\s*(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})/;
+      let wideMatch=note.match(wideMoveRe);
+      if(wideMatch){
+        const from=parseDateFlexible(wideMatch[1]);
+        const to=parseDateFlexible(wideMatch[2]);
+        if(from && to && from!==to){
+          pushCorrection({
+            id:'CORR-NOTE-WIDE-MOVE-'+(i+1)+'-'+from+'-'+to,
+            fixedId:'',originalDate:from,originalTime:'',action:'整日調課',
+            newDate:to,newTime:'',student:'',
+            course:'',teacher:'',site:'',
+            note:'來源：課程校正備註；'+note,source:'課程校正'
+          });
+        }
+      }
+      wideMatch=note.match(wideCancelRe);
+      if(wideMatch){
+        const from=parseDateFlexible(wideMatch[1]);
+        if(from){
+          pushCorrection({
+            id:'CORR-NOTE-WIDE-CANCEL-'+(i+1)+'-'+from,
+            fixedId:'',originalDate:from,originalTime:'',action:'整日停課',
+            newDate:from,newTime:'',student:'',
+            course:'',teacher:'',site:'',
+            note:'來源：課程校正備註；'+note,source:'課程校正'
+          });
+        }
       }
 
       // 新功能：備註欄直接貼自然文字即可。
