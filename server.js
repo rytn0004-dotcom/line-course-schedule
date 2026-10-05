@@ -331,7 +331,25 @@ function parseAdjust(rows, correctionRows=[]){
             });
           }
 
-          // 「10/3嘉恆請假」
+          // 「10/3嘉恆請假」以及「9/25~27p」：
+          // 後者代表 9/25～9/27 整段期間請假，不是一般備註。
+          const leaveRangeRe=/(\d{1,2})\/(\d{1,2})\s*[~～\-至]\s*(\d{1,2})\/(\d{1,2})[^()]*?(?:p)?\s*請?假|(?:\()?\s*(\d{1,2})\/(\d{1,2})\s*[~～\-至]\s*(\d{1,2})\/(\d{1,2})\s*p\s*\)?/gi;
+          while((m=leaveRangeRe.exec(text))){
+            const from=parseDateFlexible(m[1]+'/'+m[2]);
+            const to=parseDateFlexible(m[3]+'/'+m[4]);
+            if(!inlineStudent || !inlineTime || !from || !to) continue;
+            for(let leaveDate=from; leaveDate<=to; leaveDate=addDays(leaveDate,1)){
+              pushCorrection({
+                id:'CORR-NOTE-LEAVE-'+(i+1)+'-'+leaveDate+'-'+compact(inlineStudent),
+                fixedId:'',originalDate:leaveDate,originalTime:inlineTime,action:'請假',
+                newDate:leaveDate,newTime:inlineTime,student:inlineStudent,
+                course:'',teacher:'',site:'',
+                note:'來源：課程校正備註；'+line+'（'+from+'～'+to+'請假）',source:'課程校正'
+              });
+            }
+          }
+
+          // 單日請假，例如「10/3嘉恆請假」。
           const leaveRe=/(\d{1,2})\/(\d{1,2})[^()]*請假/g;
           while((m=leaveRe.exec(text))){
             const from=parseDateFlexible(m[1]+'/'+m[2]);
