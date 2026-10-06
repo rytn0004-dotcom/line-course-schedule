@@ -197,9 +197,20 @@ function parseFixed(rows){
   const hr=findHeaderRow(rows,['固定課表ID','星期','上課時間','學生','課程','老師','校區','有效迄日','啟用']);
   if(hr<0) throw new Error('固定課表欄位不正確。');
   const h=hmap(rows[hr]), out=[];
+  const enabledIssues=[];
+  const teacherDiagnostics=[];
   for(let i=hr+1;i<rows.length;i++){
     const r=rows[i]||[]; const id=str(r[h['固定課表ID']]); if(!id) continue;
-    if(norm(r[h['啟用']])!=='是') continue;
+    const enabledRaw=str(r[h['啟用']]);
+    const enabled=norm(enabledRaw);
+    if(enabled!=='是' && enabled!=='否'){
+      enabledIssues.push({row:i+1,id,student:str(r[h['學生']]),teacher:str(r[h['老師']]),enabledRaw});
+    }
+    const teacherRaw=str(r[h['老師']]);
+    if(teacherRaw && /陳少禹|少禹/.test(teacherRaw)){
+      teacherDiagnostics.push({row:i+1,id,student:str(r[h['學生']]),teacher:teacherRaw,enabled:enabledRaw,weekday:str(r[h['星期']]),rawTime:str(r[h['上課時間']),course:str(r[h['課程']]),site:str(r[h['校區']]),until:str(r[h['有效迄日']])});
+    }
+    if(enabled!=='是') continue;
     const weekday=norm(r[h['星期']]); const rawTime=str(r[h['上課時間']]); const range=parseTimeRange(rawTime); const time=range.start||timeKey(rawTime);
     if(!weekday||!time) continue;
     out.push({id,weekday,time,endTime:range.end,student:str(r[h['學生']])||extractStudentFromTime(rawTime),course:str(r[h['課程']]),teacher:str(r[h['老師']]),site:str(r[h['校區']]),until:dateKey(r[h['有效迄日']]),template:str(r[h['通知模板']]),note:str(r[h['備註']]),rawTime});
@@ -214,6 +225,12 @@ function parseFixed(rows){
         course:f.course, teacher:f.teacher, site:f.site, until:f.until, enabled:'是', note:f.note
       })));
     }
+  }
+  if(enabledIssues.length){
+    console.warn('[SCHEDULE-DATA-CHECK] 固定課表「啟用」欄位不是「是／否」', enabledIssues);
+  }
+  if(teacherDiagnostics.length){
+    console.log('[SCHEDULE-DATA-CHECK] 固定課表找到老師「陳少禹」', teacherDiagnostics);
   }
   return out;
 }
