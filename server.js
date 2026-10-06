@@ -942,8 +942,11 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
       const getIdx=name=>h[name]===undefined?-1:h[name];
       const preserveMsg = str(row[getIdx('訊息內容')]);
       const preserveConfirm = str(row[getIdx('確認發送')]);
+      const isGeneratedReminder = /-(?:P|T)$/.test(old.id) || old.id.startsWith('MERGED-');
       Object.assign(row, toOutput(x));
-      if(preserveMsg) row[getIdx('訊息內容')]=preserveMsg;
+      // 自動產生的提醒（包含 MERGED- 每日老師提醒）必須同步最新學生成員與訊息內容。
+      // 手動建立的提醒（例如 TEST-...）仍保留人工編輯過的訊息。
+      if(preserveMsg && !isGeneratedReminder) row[getIdx('訊息內容')]=preserveMsg;
       if(preserveConfirm) row[getIdx('確認發送')]=preserveConfirm;
       updates.push({rowNumber:old.rowIndex,values:row});
       updated++;
