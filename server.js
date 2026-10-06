@@ -204,6 +204,17 @@ function parseFixed(rows){
     if(!weekday||!time) continue;
     out.push({id,weekday,time,endTime:range.end,student:str(r[h['學生']])||extractStudentFromTime(rawTime),course:str(r[h['課程']]),teacher:str(r[h['老師']]),site:str(r[h['校區']]),until:dateKey(r[h['有效迄日']]),template:str(r[h['通知模板']]),note:str(r[h['備註']]),rawTime});
   }
+  // 診斷指定學生為何沒有進入「實際課程」。只記錄少禹相關資料，不改變既有排課結果。
+  const diagnosticStudents=['陳少禹','少禹'];
+  for(const target of diagnosticStudents){
+    const matched=out.filter(f=>compact(f.student)===compact(target));
+    if(matched.length){
+      console.log('[SCHEDULE-DIAG] 固定課表找到學生', target, matched.map(f=>({
+        id:f.id, weekday:f.weekday, rawTime:f.rawTime, time:f.time, endTime:f.endTime,
+        course:f.course, teacher:f.teacher, site:f.site, until:f.until, enabled:'是', note:f.note
+      })));
+    }
+  }
   return out;
 }
 function parseAdjust(rows, correctionRows=[]){
@@ -984,6 +995,16 @@ async function build({fromDate=todayKey(),days=DEFAULT_DAYS}={}){
   const fixed=parseFixed(fixedRows); const adjusts=[...parseAdjust(adjustRows,correctionRows),...parseInlineAdjustments(fixed)]; const contacts=parseContacts(contactRows); const templates=parseTemplates(templateRows);
   const fixedTemplateByIdInput=fixed;
   const actual=buildRows(fixed,adjusts,fromDate,days);
+
+  // 建立完成後再次確認少禹是否真的進入實際課程。
+  const diagFixed=fixed.filter(f=>['陳少禹','少禹'].some(n=>compact(f.student)===compact(n)));
+  const diagActual=actualObjects(actual).filter(x=>['陳少禹','少禹'].some(n=>compact(x.student)===compact(n)));
+  console.log('[SCHEDULE-DIAG] 少禹 Build 結果', {
+    fromDate,
+    toDate:addDays(fromDate,days-1),
+    fixedMatches:diagFixed.map(f=>({id:f.id,weekday:f.weekday,time:f.time,endTime:f.endTime,until:f.until,course:f.course,teacher:f.teacher,site:f.site,note:f.note})),
+    actualMatches:diagActual.map(x=>({courseId:x.courseId,date:x.date,weekday:x.weekday,time:x.time,student:x.student,course:x.course,teacher:x.teacher,site:x.site,source:x.source,fixedId:x.fixedId,adjustId:x.adjustId,adjustResult:x.adjustResult,note:x.note}))
+  });
   await writeActual(actual);
   const reminder=AUTO_CREATE_REMINDERS
     ? await syncReminders(actual,reminderRows,contacts,templates,settings,fromDate,days,fixedTemplateByIdInput)
