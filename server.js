@@ -915,6 +915,15 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
     }
     return [x.role,compact(x.recipient),x.date,x.time,compact(x.teacher),compact(x.site)].join('|');
   }));
+  // 以邏輯群組建立索引。舊版提醒 ID 可能不同，因此不能只靠 ID 判斷；
+  // 只要日期／身分／收件人／老師／校區相同，就同步最新合併內容並保留原 ID。
+  const expectedByLogicalKey=new Map();
+  for(const x of expected){
+    const logicalKey=x.role==='老師'
+      ? [x.role,compact(x.recipient),x.date,compact(x.teacher),compact(x.site)].join('|')
+      : [x.role,compact(x.recipient),x.date,x.time,compact(x.teacher),compact(x.site)].join('|');
+    if(!expectedByLogicalKey.has(logicalKey)) expectedByLogicalKey.set(logicalKey,x);
+  }
   const parsed=parseReminderRows(reminderRows);
   const headers=parsed.headers?.length ? parsed.headers : REMINDER_HEADERS;
   const h=hmap(headers);
@@ -956,18 +965,33 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
     }
   }
 
-  // Generated reminder rows for courses that disappeared inside this build window
-  // are explicitly disabled so the separate reminder service cannot send stale classes.
+  // 課程被停用／刪除後，如果同一個提醒群組仍存在（例如老師當天還有其他學生），
+  // 直接重建該提醒內容，不需要人工刪除；只有整個群組都不存在時才停用。
   for(const old of parsed.rows){
     if(expectedKeys.has(`${old.id}|${old.role}|${old.recipient}`)) continue;
+
     const isGenerated = /-(?:P|T)$/.test(old.id) || old.id.startsWith('MERGED-');
     const inWindow = old.date && old.date>=fromDate && old.date<=addDays(fromDate,days-1);
+    if(!inWindow || !isGenerated) continue;
+
     const oldLogicalKey=old.role==='老師'
       ? [old.role,compact(old.recipient),old.date,compact(String(old.values[h['老師']]||'')),compact(String(old.values[h['校區']]||''))].join('|')
       : [old.role,compact(old.recipient),old.date,old.time,compact(String(old.values[h['老師']]||'')),compact(String(old.values[h['校區']]||''))].join('|');
-    const replacedByMerged = expectedLogicalKeys.has(oldLogicalKey) && !expectedKeys.has(old.id+'|'+old.role+'|'+old.recipient);
-    if((!isGenerated && !replacedByMerged) || !inWindow) continue;
-    const row=old.values.slice(); while(row.length<width) row.push('');
+
+    const replacement=expectedByLogicalKey.get(oldLogicalKey);
+    if(replacement){
+      const row=old.values.slice();
+      while(row.length<width) row.push('');
+      const preserveConfirm=str(row[h['確認發送']]);
+      Object.assign(row,toOutput({...replacement,id:old.id}));
+      if(preserveConfirm) row[h['確認發送']]=preserveConfirm;
+      updates.push({rowNumber:old.rowIndex,values:row});
+      updated++;
+      continue;
+    }
+
+    const row=old.values.slice();
+    while(row.length<width) row.push('');
     if(h['確認發送']!==undefined) row[h['確認發送']]='否';
     updates.push({rowNumber:old.rowIndex,values:row});
     disabled++;
