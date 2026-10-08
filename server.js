@@ -992,6 +992,9 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
 
     const row=old.values.slice();
     while(row.length<width) row.push('');
+    if(h['學生/學生成員']!==undefined) row[h['學生/學生成員']]='';
+    if(h['課程']!==undefined) row[h['課程']]='';
+    if(h['訊息內容']!==undefined) row[h['訊息內容']]='';
     if(h['確認發送']!==undefined) row[h['確認發送']]='否';
     updates.push({rowNumber:old.rowIndex,values:row});
     disabled++;
