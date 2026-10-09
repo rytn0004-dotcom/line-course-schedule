@@ -208,7 +208,7 @@ function parseFixed(rows){
     }
     const teacherRaw=str(r[h['老師']]);
     if(teacherRaw && /陳少禹|少禹/.test(teacherRaw)){
-      teacherDiagnostics.push({row:i+1,id,student:str(r[h['學生']]),teacher:teacherRaw,enabled:enabledRaw,weekday:str(r[h['星期']]),rawTime:str(r[h['上課時間']),course:str(r[h['課程']]),site:str(r[h['校區']]),until:str(r[h['有效迄日']])});
+      teacherDiagnostics.push({row:i+1,id,student:str(r[h['學生']]),teacher:teacherRaw,enabled:enabledRaw,weekday:str(r[h['星期']]),rawTime:str(r[h['上課時間']]),course:str(r[h['課程']]),site:str(r[h['校區']]),until:str(r[h['有效迄日']])});
     }
     if(enabled!=='是') continue;
     const weekday=norm(r[h['星期']]); const rawTime=str(r[h['上課時間']]); const range=parseTimeRange(rawTime); const time=range.start||timeKey(rawTime);
