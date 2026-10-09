@@ -917,16 +917,20 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
   }));
   // 以邏輯群組建立索引。舊版提醒 ID 可能不同，因此不能只靠 ID 判斷；
   // 只要日期／身分／收件人／老師／校區相同，就同步最新合併內容並保留原 ID。
-  const expectedByLogicalKey=new Map();
-  for(const x of expected){
-    const logicalKey=x.role==='老師'
-      ? [x.role,compact(x.recipient),x.date,compact(x.teacher),compact(x.site)].join('|')
-      : [x.role,compact(x.recipient),x.date,x.time,compact(x.teacher),compact(x.site)].join('|');
-    if(!expectedByLogicalKey.has(logicalKey)) expectedByLogicalKey.set(logicalKey,x);
-  }
   const parsed=parseReminderRows(reminderRows);
   const headers=parsed.headers?.length ? parsed.headers : REMINDER_HEADERS;
   const h=hmap(headers);
+  const logicalKeyForExpected=x=>x.role==='老師'
+    ? [x.role,compact(x.recipient),x.date,compact(x.teacher),compact(x.site)].join('|')
+    : [x.role,compact(x.recipient),x.date,x.time,compact(x.teacher),compact(x.site)].join('|');
+  const logicalKeyForOld=old=>old.role==='老師'
+    ? [old.role,compact(old.recipient),old.date,compact(String(old.values[h['老師']]||'')),compact(String(old.values[h['校區']]||''))].join('|')
+    : [old.role,compact(old.recipient),old.date,old.time,compact(String(old.values[h['老師']]||'')),compact(String(old.values[h['校區']]||''))].join('|');
+  const oldByLogicalKey=new Map();
+  for(const old of parsed.rows){
+    const logicalKey=logicalKeyForOld(old);
+    if(!oldByLogicalKey.has(logicalKey)) oldByLogicalKey.set(logicalKey,old);
+  }
 
   const width=Math.max(headers.length, REMINDER_HEADERS.length);
   const updates=[];
@@ -934,6 +938,7 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
   let created=0, updated=0, disabled=0;
   const existingByKey=new Map();
   for(const row of parsed.rows){ existingByKey.set(`${row.id}|${row.role}|${row.recipient}`,row); }
+  const matchedOldRowIndexes=new Set();
 
   const toOutput = x => {
     const arr=new Array(width).fill('');
@@ -944,15 +949,19 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
   };
 
   for(const x of expected){
-    const old=existingByKey.get(`${x.id}|${x.role}|${x.recipient}`);
-    if(old){
+    const exactKey=`${x.id}|${x.role}|${x.recipient}`;
+    // 先以 ID 精確比對；若 ID 改版，再以提醒的邏輯群組沿用舊列，
+    // 避免同一個提醒同時新增新 ID、又保留舊 ID 而產生重複。
+    const old=existingByKey.get(exactKey) || oldByLogicalKey.get(logicalKeyForExpected(x));
+    if(old && !matchedOldRowIndexes.has(old.rowIndex)){
+      matchedOldRowIndexes.add(old.rowIndex);
       const row=old.values.slice();
       while(row.length<width) row.push('');
       const getIdx=name=>h[name]===undefined?-1:h[name];
       const preserveMsg = str(row[getIdx('訊息內容')]);
       const preserveConfirm = str(row[getIdx('確認發送')]);
       const isGeneratedReminder = /-(?:P|T)$/.test(old.id) || old.id.startsWith('MERGED-');
-      Object.assign(row, toOutput(x));
+      Object.assign(row, toOutput({...x,id:old.id}));
       // 自動產生的提醒（包含 MERGED- 每日老師提醒）必須同步最新學生成員與訊息內容。
       // 手動建立的提醒（例如 TEST-...）仍保留人工編輯過的訊息。
       if(preserveMsg && !isGeneratedReminder) row[getIdx('訊息內容')]=preserveMsg;
@@ -968,28 +977,14 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
   // 課程被停用／刪除後，如果同一個提醒群組仍存在（例如老師當天還有其他學生），
   // 直接重建該提醒內容，不需要人工刪除；只有整個群組都不存在時才停用。
   for(const old of parsed.rows){
-    if(expectedKeys.has(`${old.id}|${old.role}|${old.recipient}`)) continue;
+    if(matchedOldRowIndexes.has(old.rowIndex)) continue;
 
     const isGenerated = /-(?:P|T)$/.test(old.id) || old.id.startsWith('MERGED-');
     const inWindow = old.date && old.date>=fromDate && old.date<=addDays(fromDate,days-1);
     if(!inWindow || !isGenerated) continue;
 
-    const oldLogicalKey=old.role==='老師'
-      ? [old.role,compact(old.recipient),old.date,compact(String(old.values[h['老師']]||'')),compact(String(old.values[h['校區']]||''))].join('|')
-      : [old.role,compact(old.recipient),old.date,old.time,compact(String(old.values[h['老師']]||'')),compact(String(old.values[h['校區']]||''))].join('|');
-
-    const replacement=expectedByLogicalKey.get(oldLogicalKey);
-    if(replacement){
-      const row=old.values.slice();
-      while(row.length<width) row.push('');
-      const preserveConfirm=str(row[h['確認發送']]);
-      Object.assign(row,toOutput({...replacement,id:old.id}));
-      if(preserveConfirm) row[h['確認發送']]=preserveConfirm;
-      updates.push({rowNumber:old.rowIndex,values:row});
-      updated++;
-      continue;
-    }
-
+    // 沒有被任何目前應存在的提醒配對到，代表這是重複或已失效的舊列；
+    // 清空內容並取消確認，避免舊提醒繼續發送。
     const row=old.values.slice();
     while(row.length<width) row.push('');
     if(h['學生/學生成員']!==undefined) row[h['學生/學生成員']]='';
