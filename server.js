@@ -928,6 +928,8 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
     : [old.role,compact(old.recipient),old.date,old.time,compact(String(old.values[h['老師']]||'')),compact(String(old.values[h['校區']]||''))].join('|');
   const oldByLogicalKey=new Map();
   for(const old of parsed.rows){
+    const isGenerated = /-(?:P|T)$/.test(old.id) || old.id.startsWith('MERGED-');
+    if(!isGenerated) continue; // 手動提醒（例如 TEST-...）不可被自動同步覆寫。
     const logicalKey=logicalKeyForOld(old);
     if(!oldByLogicalKey.has(logicalKey)) oldByLogicalKey.set(logicalKey,old);
   }
