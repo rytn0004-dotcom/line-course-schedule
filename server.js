@@ -1115,6 +1115,13 @@ function parseRawCourseCell(cell, teacher, weekday, year = new Date().getFullYea
       annotations.push(str(x));
       return '';
     }).trim();
+    // 部分課表儲存格的備註括號沒有結尾（例如「繹桓(9/25p調10/5b，」）。
+    // 若未閉合括號內含調課／請假等註記，將它視為備註而非學生姓名尾巴。
+    const danglingNote=rest.match(/[（(]([^）)]*(?:調|請假|加時|加課|補課|改|代|僅|p)[^）)]*)$/i);
+    if(danglingNote){
+      annotations.push(str(danglingNote[1]).replace(/[，,、;；]+$/,''));
+      rest=rest.slice(0,danglingNote.index).trim();
+    }
     const student=rest.replace(/\s+/g,' ').trim();
     if(!student) continue;
     out.push({teacher,weekday,time:start,endTime:end,student,course:'',site:'',annotations,raw:line});
@@ -1122,41 +1129,103 @@ function parseRawCourseCell(cell, teacher, weekday, year = new Date().getFullYea
   return out;
 }
 
+function addMinutesToTime(value, minutes){
+  const t=timeKey(value);
+  if(!t) return '';
+  const [hh,mm]=t.split(':').map(Number);
+  const total=(hh*60+mm+minutes+1440)%1440;
+  return String(Math.floor(total/60)).padStart(2,'0')+':'+String(total%60).padStart(2,'0');
+}
+
 function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
   const out=[];
+  const base={
+    id:'',fixedId:'',weekday:item.weekday||'',time:item.time||item.originalTime||'',
+    student:item.student,course:item.course,teacher:item.teacher,site:item.site,
+    source:'開學課表'
+  };
   for(const note of item.annotations||[]){
-    // 保留原始空白，避免「10/9 1100-1230」去空白後被誤讀成「10/91 100-1230」。
     const rawText=str(note);
     const text=rawText.replace(/\s+/g,'');
     let m;
-    // 日期與新時段之間必須有分隔空白，避免把時間的首位數字併入日期。
+
+    // 特例：「9/28p調9/21、10/5、10/12各+30min」
+    // 這是指定日期各自延後，不可只解析第一個「調」的目標日期。
+    const multiOffset=text.match(/(\d{1,2})\/(\d{1,2})p?調\s*(\d{1,2})\/(\d{1,2})[、,，]\s*(\d{1,2})\/(\d{1,2})[、,，]\s*(\d{1,2})\/(\d{1,2})各\+(\d{1,2})(?:min|分鐘)/i);
+    if(multiOffset){
+      const targets=[
+        parseDateFlexible(multiOffset[3]+'/'+multiOffset[4],year),
+        parseDateFlexible(multiOffset[5]+'/'+multiOffset[6],year),
+        parseDateFlexible(multiOffset[7]+'/'+multiOffset[8],year)
+      ].filter(Boolean);
+      const delta=Number(multiOffset[9]);
+      if(targets.length===3 && Number.isFinite(delta) && delta>0 && delta<=180){
+        for(const d of targets){
+          out.push({
+            ...base,originalDate:d,originalTime:item.time,
+            // 這種備註所在列的時間區間已是延長後時段（例如 20:00-22:00）。
+            // 開始時間不變；使用該列下課時間，避免把 +30 分鐘再加第二次。
+            action:'改時間',newDate:d,newTime:item.time,
+            newEndTime:item.endTime,
+            note:'來源：開學課表；'+note+'（'+d+' 調整 '+delta+' 分鐘）'
+          });
+        }
+      }else{
+        console.warn('[PREVIEW-PARSE-WARNING] 無法完整解析多日期調整：',note);
+      }
+      continue;
+    }
+
+    // 同日改時段，例如「10/9 0900-1030」。
+    // 保留完整下課時間，不只記錄開始時間。
     const sameDayTime=/^(\d{1,2})\/(\d{1,2})\s+(\d{1,2}:?\d{2})[-~～至](\d{1,2}:?\d{2})$/;
     const sameDayMatch=rawText.match(sameDayTime);
     if(sameDayMatch){
       const d=parseDateFlexible(sameDayMatch[1]+'/'+sameDayMatch[2],year);
       const newStart=timeKey(sameDayMatch[3]), newEnd=timeKey(sameDayMatch[4]);
-      if(d && newStart && newEnd) out.push({id:'',fixedId:'',originalDate:d,originalTime:item.time,action:'改時間',newDate:d,newTime:newStart,student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note+'（調整後時段 '+newStart+'-'+newEnd+'）',source:'開學課表'});
+      if(d && newStart && newEnd) out.push({
+        ...base,originalDate:d,originalTime:item.time,action:'改時間',
+        newDate:d,newTime:newStart,newEndTime:newEnd,
+        note:'來源：開學課表；'+note+'（調整後時段 '+newStart+'-'+newEnd+'）'
+      });
+      continue;
     }
+
+    // 一般調課，例如「10/10p調10/9b」。
     const moveRe=/(\d{1,2})\/(\d{1,2})[^()]*?調\s*(\d{1,2})\/(\d{1,2})/g;
     while((m=moveRe.exec(text))){
       const from=parseDateFlexible(m[1]+'/'+m[2],year);
       const to=parseDateFlexible(m[3]+'/'+m[4],year);
-      if(from && to) out.push({id:'',fixedId:'',originalDate:from,originalTime:item.time,action:'調課',newDate:to,newTime:item.time,student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note,source:'開學課表'});
+      if(from && to) out.push({
+        ...base,originalDate:from,originalTime:item.time,action:'調課',
+        newDate:to,newTime:item.time,newEndTime:item.endTime,
+        note:'來源：開學課表；'+note
+      });
     }
+
+    // 請假和調課分開判斷；「10/10p調10/9b」不可同時產生請假紀錄。
     const leaveRe=/(\d{1,2})\/(\d{1,2})[^0-9]*(?:請假|p(?:調|$))/gi;
     while((m=leaveRe.exec(text))){
       const d=parseDateFlexible(m[1]+'/'+m[2],year);
-      if(d && !/調/.test(text)) out.push({id:'',fixedId:'',originalDate:d,originalTime:item.time,action:'請假',newDate:d,newTime:item.time,student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note,source:'開學課表'});
+      if(d && !/調/.test(text)) out.push({
+        ...base,originalDate:d,originalTime:item.time,action:'請假',
+        newDate:d,newTime:item.time,newEndTime:item.endTime,
+        note:'來源：開學課表；'+note
+      });
     }
+
     const addRe=/(\d{1,2})\/(\d{1,2})[^0-9]*?(?:補課|加課)/g;
     while((m=addRe.exec(text))){
       const d=parseDateFlexible(m[1]+'/'+m[2],year);
-      if(d) out.push({id:'',fixedId:'',originalDate:'',originalTime:'',action:'補課',newDate:d,newTime:item.time,student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note,source:'開學課表'});
+      if(d) out.push({
+        ...base,originalDate:'',originalTime:'',action:'補課',
+        newDate:d,newTime:item.time,newEndTime:item.endTime,
+        note:'來源：開學課表；'+note
+      });
     }
   }
   return out;
 }
-
 function rawFixedLogicalKey(x){
   return [norm(x.weekday),timeKey(x.time),compact(x.student),compact(x.teacher)].join('|');
 }
@@ -1176,18 +1245,41 @@ function parseRawSchedule(rows, year = new Date().getFullYear()){
   const fixed=[], adjustments=[];
   for(let r=1;r<rows.length;r++){
     const row=rows[r]||[];
-    // 老師欄可能同時放可排課時間等備註；只用第一行作為老師姓名，並去掉姓名後的括號註記。
     const teacherCell=str(row[teacherCol]);
-    const teacher=str((teacherCell.split(/\r?\n/)[0]||'').replace(/[（(][^）)]*[）)]/g,'')).trim();
+    let teacherLine=str((teacherCell.split(/\r?\n/)[0]||'')).trim();
+    if(/[（(](?:\d{1,2}\/\d{1,2}|請假|調課|代課|停課|老師|備註)/.test(teacherLine)){
+      teacherLine=teacherLine.replace(/[（(].*$/,'');
+    }else{
+      teacherLine=teacherLine.replace(/[（(][^）)]*[）)]/g,'');
+    }
+    const teacher=str(teacherLine).trim();
     if(!teacher) continue;
     for(const [col,weekday] of Object.entries(weekdayCols)){
       for(const item of parseRawCourseCell(row[Number(col)],teacher,weekday,year)){
-        fixed.push(item);
+        const isDateSpecificExtension=(item.annotations||[]).some(note=>
+          /(\d{1,2})\/(\d{1,2})p?調\s*\d{1,2}\/\d{1,2}[、,，]\s*\d{1,2}\/\d{1,2}[、,，]\s*\d{1,2}\/\d{1,2}各\+\d{1,2}(?:min|分鐘)/i.test(str(note).replace(/\s+/g,''))
+        );
+        // 「指定日期各+30min」這一列是特定日期的調整說明，不是每週固定課。
+        // 保留其調整紀錄，但避免同一學生同時被建立 20:00-21:30 與 20:00-22:00 兩筆固定課。
+        if(!isDateSpecificExtension) fixed.push(item);
         adjustments.push(...parseRawAdjustmentAnnotations(item,year));
       }
     }
   }
-  return {fixed,adjustments};
+  // 相同來源註記可能因課表格子重複而被解析多次；先按完整語意去重，再分配 ID。
+  const uniqueAdjustments=[];
+  const seenAdjustments=new Set();
+  for(const a of adjustments){
+    const key=[
+      a.originalDate||'',a.originalTime||'',a.action||'',a.newDate||'',
+      a.newTime||'',a.newEndTime||'',compact(a.student||''),compact(a.teacher||''),
+      compact(a.course||''),compact(a.site||''),compact(a.note||'')
+    ].join('|');
+    if(seenAdjustments.has(key)) continue;
+    seenAdjustments.add(key);
+    uniqueAdjustments.push(a);
+  }
+  return {fixed,adjustments:uniqueAdjustments};
 }
 
 function matchRawFixedIds(rawFixed, existingFixedRows){
@@ -1227,12 +1319,20 @@ function assignPreviewAdjustmentIds(adjustments, existingAdjustRows){
   }
   let max=0;
   for(const x of existing){ const m=x.id.match(/^ADJ(\d+)$/i); if(m) max=Math.max(max,Number(m[1])); }
-  const keyOf=x=>[x.fixedId||'',x.originalDate||'',x.originalTime||'',x.action||'',x.newDate||'',x.newTime||'',compact(x.student||'')].join('|');
+  // 既有「調課課程」工作表沒有新下課時間／老師欄，因此以既有欄位配對舊 ID。
+  const keyOf=x=>[x.originalDate||'',x.originalTime||'',x.action||'',x.newDate||'',x.newTime||'',compact(x.student||'')].join('|');
   const byKey=new Map(existing.map(x=>[keyOf(x),x.id]));
   const used=new Set(existing.map(x=>x.id));
+  const assigned=new Set();
   return adjustments.map(x=>{
     const key=keyOf(x); let id=byKey.get(key);
-    if(!id){do{id='ADJ'+String(++max).padStart(3,'0');}while(used.has(id)); used.add(id); byKey.set(key,id);}
+    // 即使舊資料有重複 ID，也不可讓兩筆不同預覽紀錄共用同一個 ID。
+    if(!id || assigned.has(id)){
+      do{id='ADJ'+String(++max).padStart(3,'0');}while(used.has(id)||assigned.has(id));
+      used.add(id);
+      if(!byKey.has(key)) byKey.set(key,id);
+    }
+    assigned.add(id);
     return {...x,id};
   });
 }
@@ -1259,6 +1359,103 @@ app.get('/preview-source',async(req,res)=>{
   }catch(e){
     console.error('Source preview failed',e);
     res.status(500).json({ok:false,mode:'preview-only',writesPerformed:false,error:e.message});
+  }
+});
+
+
+
+// Read-only audit: compare the current source preview against the existing normalized
+// 固定課表／調課課程 rows. This does not write sheets, build courses, or send LINE.
+function auditSourceAgainstExisting(rawRows, fixedRows, adjustRows, year){
+  const parsed=parseRawSchedule(rawRows,year);
+  const sourceFixed=matchRawFixedIds(parsed.fixed,fixedRows);
+  const sourceAdjust=assignPreviewAdjustmentIds(parsed.adjustments.map(x=>({
+    ...x,
+    fixedId:sourceFixed.find(f=>rawFixedLogicalKey(f)===rawFixedLogicalKey(x))?.id||''
+  })),adjustRows);
+
+  const fixedHr=findHeaderRow(fixedRows,['固定課表ID','星期','上課時間','學生','老師','校區','有效迄日','啟用']);
+  const existingFixed=[];
+  if(fixedHr>=0){
+    const h=hmap(fixedRows[fixedHr]);
+    for(let i=fixedHr+1;i<fixedRows.length;i++){
+      const r=fixedRows[i]||[], id=str(r[h['固定課表ID']]);
+      if(!id) continue;
+      const rawTime=str(r[h['上課時間']]), range=parseTimeRange(rawTime);
+      existingFixed.push({
+        id,weekday:str(r[h['星期']]),time:range.start||timeKey(rawTime),endTime:range.end,
+        student:str(r[h['學生']])||extractStudentFromTime(rawTime),teacher:str(r[h['老師']]),
+        rawTime
+      });
+    }
+  }
+
+  const identity=x=>[norm(x.weekday),compact(x.student)].join('|');
+  const sourceGroups=new Map(), existingGroups=new Map();
+  for(const x of sourceFixed){ const k=identity(x); if(!sourceGroups.has(k))sourceGroups.set(k,[]); sourceGroups.get(k).push(x); }
+  for(const x of existingFixed){ const k=identity(x); if(!existingGroups.has(k))existingGroups.set(k,[]); existingGroups.get(k).push(x); }
+  const fixedChanges=[], sourceOnly=[], existingOnly=[];
+  const allKeys=new Set([...sourceGroups.keys(),...existingGroups.keys()]);
+  const slot=x=>[timeKey(x.time),timeKey(x.endTime)].join('|');
+  for(const k of allKeys){
+    const ss=[...(sourceGroups.get(k)||[])], ee=[...(existingGroups.get(k)||[])];
+    // Match exact time slots first so one changed slot does not mislabel every class
+    // for the same student/teacher/day as a change.
+    for(let i=ss.length-1;i>=0;i--){
+      const j=ee.findIndex(y=>slot(y)===slot(ss[i]) && compact(y.teacher)===compact(ss[i].teacher));
+      if(j>=0){ ss.splice(i,1); ee.splice(j,1); }
+    }
+    while(ss.length && ee.length){
+      const s=ss.shift(), e=ee.shift();
+      const fields=[];
+      if(timeKey(s.time)!==timeKey(e.time)) fields.push({field:'上課時間',previous:e.time||'未設定',current:s.time||'未設定'});
+      if(e.endTime && timeKey(s.endTime)!==timeKey(e.endTime)) fields.push({field:'下課時間',previous:e.endTime,current:s.endTime||'未設定'});
+      if(compact(s.teacher)!==compact(e.teacher)) fields.push({field:'老師',previous:e.teacher||'未設定',current:s.teacher||'未設定'});
+      if(fields.length) fixedChanges.push({
+        type:'欄位變更',student:s.student,weekday:s.weekday,
+        fixedId:e.id,sourceId:s.id,fields,sourceRaw:s.raw||'',existingRaw:e.rawTime||''
+      });
+    }
+    sourceOnly.push(...ss.map(s=>({type:'來源有、固定課表無',student:s.student,teacher:s.teacher,weekday:s.weekday,time:s.time,endTime:s.endTime,sourceId:s.id,raw:s.raw||''})));
+    existingOnly.push(...ee.map(e=>({type:'固定課表有、來源無',student:e.student,teacher:e.teacher,weekday:e.weekday,time:e.time,endTime:e.endTime,fixedId:e.id,raw:e.rawTime||''})));
+  }
+
+  const existingAdjust=parseAdjust(adjustRows);
+  const adjKey=x=>[
+    x.originalDate||'',timeKey(x.originalTime),norm(x.action),x.newDate||'',
+    timeKey(x.newTime),compact(x.student)
+  ].join('|');
+  const existingAdjustKeys=new Set(existingAdjust.map(adjKey));
+  const sourceAdjustKeys=new Set(sourceAdjust.map(adjKey));
+  const sourceAdjustOnly=sourceAdjust.filter(x=>!existingAdjustKeys.has(adjKey(x))).map(x=>({
+    id:x.id,type:'來源異動尚未對應到調課課程',student:x.student,teacher:x.teacher,
+    action:x.action,originalDate:x.originalDate,originalTime:x.originalTime,
+    newDate:x.newDate,newTime:x.newTime,newEndTime:x.newEndTime,note:x.note
+  }));
+  const existingAdjustOnly=existingAdjust.filter(x=>!sourceAdjustKeys.has(adjKey(x))).map(x=>({
+    id:x.id,type:'調課課程中有、開學課表預覽無對應',student:x.student,teacher:x.teacher,
+    action:x.action,originalDate:x.originalDate,originalTime:x.originalTime,
+    newDate:x.newDate,newTime:x.newTime,note:x.note
+  }));
+
+  return {
+    ok:true,mode:'read-only-audit',writesPerformed:false,buildExecuted:false,lineMessagesSent:false,
+    sourceSheet:'開學課表',comparisonBaseline:['固定課表','調課課程'],
+    note:'這是目前來源與既有整理表的差異比對，不是 Google Sheets 編輯者／版本歷史紀錄。',
+    fixed:{changed:fixedChanges.length,sourceOnly:sourceOnly.length,existingOnly:existingOnly.length,changes:fixedChanges.slice(0,200),sourceOnlyRows:sourceOnly.slice(0,200),existingOnlyRows:existingOnly.slice(0,200)},
+    adjustments:{sourceOnly:sourceAdjustOnly.length,existingOnly:existingAdjustOnly.length,sourceOnlyRows:sourceAdjustOnly.slice(0,200),existingOnlyRows:existingAdjustOnly.slice(0,200),limitation:'調課課程目前沒有新下課時間欄，因此本次無法以該工作表的既有資料驗證 newEndTime。'},
+    counts:{sourceFixed:sourceFixed.length,existingFixed:existingFixed.length,existingFixedWithEndTime:existingFixed.filter(x=>Boolean(x.endTime)).length,sourceAdjustments:sourceAdjust.length,existingAdjustments:existingAdjust.length}
+  };
+}
+
+app.get('/audit-source',async(req,res)=>{
+  try{
+    const year=Number(req.query.year||new Date().getFullYear());
+    const [rawRows,fixedRows,adjustRows]=await readRawSourcePreview();
+    res.json(auditSourceAgainstExisting(rawRows,fixedRows,adjustRows,year));
+  }catch(e){
+    console.error('Read-only source audit failed',e);
+    res.status(500).json({ok:false,mode:'read-only-audit',writesPerformed:false,buildExecuted:false,lineMessagesSent:false,error:e.message});
   }
 });
 
