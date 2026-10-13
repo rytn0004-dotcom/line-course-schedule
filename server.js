@@ -1388,7 +1388,7 @@ function auditSourceAgainstExisting(rawRows, fixedRows, adjustRows, year){
     // Match exact time slots first so one changed slot does not mislabel every class
     // for the same student/teacher/day as a change.
     for(let i=ss.length-1;i>=0;i--){
-      const j=ee.findIndex(y=>slot(y)===slot(ss[i]));
+      const j=ee.findIndex(y=>slot(y)===slot(ss[i]) && compact(y.teacher)===compact(ss[i].teacher));
       if(j>=0){ ss.splice(i,1); ee.splice(j,1); }
     }
     while(ss.length && ee.length){
