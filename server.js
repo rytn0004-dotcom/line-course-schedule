@@ -1263,12 +1263,5 @@ app.get('/preview-source',async(req,res)=>{
 });
 
 app.listen(PORT,()=>console.log(`LINE Course Schedule Manager v1.2 listening on ${PORT}`));
-// Light automatic refresh: rebuild once at startup, then every 6 hours. No LINE sending.
-(async()=>{
-  try { lastBuild=await buildOnce({fromDate:todayKey(),days:DEFAULT_DAYS}); lastBuild.at=new Date().toISOString(); console.log('Initial schedule build complete',lastBuild); }
-  catch(e){ lastBuild={status:'error',error:e.message,at:new Date().toISOString()}; console.error('Initial schedule build failed',e); }
-  setInterval(async()=>{
-    try { lastBuild=await buildOnce({fromDate:todayKey(),days:DEFAULT_DAYS}); lastBuild.at=new Date().toISOString(); console.log('Scheduled schedule rebuild complete',lastBuild); }
-    catch(e){ lastBuild={status:'error',error:e.message,at:new Date().toISOString()}; console.error('Scheduled schedule rebuild failed',e); }
-  }, 6*60*60*1000).unref?.();
-})();
+// Safety: do not build or write Google Sheets automatically at startup or on a timer.
+// Use the explicit /build endpoint only after reviewing the source preview.
