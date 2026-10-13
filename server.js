@@ -1376,7 +1376,7 @@ function auditSourceAgainstExisting(rawRows, fixedRows, adjustRows, year){
     }
   }
 
-  const identity=x=>[norm(x.weekday),compact(x.student),compact(x.teacher)].join('|');
+  const identity=x=>[norm(x.weekday),compact(x.student)].join('|');
   const sourceGroups=new Map(), existingGroups=new Map();
   for(const x of sourceFixed){ const k=identity(x); if(!sourceGroups.has(k))sourceGroups.set(k,[]); sourceGroups.get(k).push(x); }
   for(const x of existingFixed){ const k=identity(x); if(!existingGroups.has(k))existingGroups.set(k,[]); existingGroups.get(k).push(x); }
