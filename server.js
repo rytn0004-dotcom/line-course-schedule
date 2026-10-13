@@ -1395,7 +1395,7 @@ function auditSourceAgainstExisting(rawRows, fixedRows, adjustRows, year){
       const s=ss.shift(), e=ee.shift();
       const fields=[];
       if(timeKey(s.time)!==timeKey(e.time)) fields.push({field:'上課時間',previous:e.time||'未設定',current:s.time||'未設定'});
-      if(timeKey(s.endTime)!==timeKey(e.endTime)) fields.push({field:'下課時間',previous:e.endTime||'未設定',current:s.endTime||'未設定'});
+      if(e.endTime && timeKey(s.endTime)!==timeKey(e.endTime)) fields.push({field:'下課時間',previous:e.endTime,current:s.endTime||'未設定'});
       if(compact(s.teacher)!==compact(e.teacher)) fields.push({field:'老師',previous:e.teacher||'未設定',current:s.teacher||'未設定'});
       if(fields.length) fixedChanges.push({
         type:'欄位變更',student:s.student,weekday:s.weekday,
@@ -1430,7 +1430,7 @@ function auditSourceAgainstExisting(rawRows, fixedRows, adjustRows, year){
     note:'這是目前來源與既有整理表的差異比對，不是 Google Sheets 編輯者／版本歷史紀錄。',
     fixed:{changed:fixedChanges.length,sourceOnly:sourceOnly.length,existingOnly:existingOnly.length,changes:fixedChanges.slice(0,200),sourceOnlyRows:sourceOnly.slice(0,200),existingOnlyRows:existingOnly.slice(0,200)},
     adjustments:{sourceOnly:sourceAdjustOnly.length,existingOnly:existingAdjustOnly.length,sourceOnlyRows:sourceAdjustOnly.slice(0,200),existingOnlyRows:existingAdjustOnly.slice(0,200),limitation:'調課課程目前沒有新下課時間欄，因此本次無法以該工作表的既有資料驗證 newEndTime。'},
-    counts:{sourceFixed:sourceFixed.length,existingFixed:existingFixed.length,sourceAdjustments:sourceAdjust.length,existingAdjustments:existingAdjust.length}
+    counts:{sourceFixed:sourceFixed.length,existingFixed:existingFixed.length,existingFixedWithEndTime:existingFixed.filter(x=>Boolean(x.endTime)).length,sourceAdjustments:sourceAdjust.length,existingAdjustments:existingAdjust.length}
   };
 }
 
