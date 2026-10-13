@@ -1305,12 +1305,20 @@ function assignPreviewAdjustmentIds(adjustments, existingAdjustRows){
   }
   let max=0;
   for(const x of existing){ const m=x.id.match(/^ADJ(\d+)$/i); if(m) max=Math.max(max,Number(m[1])); }
-  const keyOf=x=>[x.fixedId||'',x.originalDate||'',x.originalTime||'',x.action||'',x.newDate||'',x.newTime||'',x.newEndTime||'',compact(x.student||''),compact(x.teacher||'')].join('|');
+  // 既有「調課課程」工作表沒有新下課時間／老師欄，因此以既有欄位配對舊 ID。
+  const keyOf=x=>[x.originalDate||'',x.originalTime||'',x.action||'',x.newDate||'',x.newTime||'',compact(x.student||'')].join('|');
   const byKey=new Map(existing.map(x=>[keyOf(x),x.id]));
   const used=new Set(existing.map(x=>x.id));
+  const assigned=new Set();
   return adjustments.map(x=>{
     const key=keyOf(x); let id=byKey.get(key);
-    if(!id){do{id='ADJ'+String(++max).padStart(3,'0');}while(used.has(id)); used.add(id); byKey.set(key,id);}
+    // 即使舊資料有重複 ID，也不可讓兩筆不同預覽紀錄共用同一個 ID。
+    if(!id || assigned.has(id)){
+      do{id='ADJ'+String(++max).padStart(3,'0');}while(used.has(id)||assigned.has(id));
+      used.add(id);
+      if(!byKey.has(key)) byKey.set(key,id);
+    }
+    assigned.add(id);
     return {...x,id};
   });
 }
