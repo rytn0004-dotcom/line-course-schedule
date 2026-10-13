@@ -96,7 +96,27 @@ function timeKey(v){
 }
 function parseTimeRange(v){ const m=str(v).replace(/\s+/g,'').match(/(\d{1,2}:?\d{2})[-~～至](\d{1,2}:?\d{2})/); return m?{start:timeKey(m[1]),end:timeKey(m[2])}:{start:'',end:''}; }
 function extractStudentFromTime(v){ const m=str(v).match(/(?:\d{1,2}:?\d{2})\s*[-~～至]\s*(?:\d{1,2}:?\d{2})\s*([^()（）]*)/); return m?str(m[1]):''; }
-function parseDateFlexible(v, fallbackYear=new Date().toLocaleString('en-US',{timeZone:TZ,year:'numeric'})){ if(typeof v==='number')return dateKey(v); const x=str(v),full=dateKey(x); if(/^\d{4}-\d{2}-\d{2}$/.test(full))return full; const m=x.match(/^(\d{1,2})[\/\.\-](\d{1,2})$/); return m?fallbackYear+'-'+String(+m[1]).padStart(2,'0')+'-'+String(+m[2]).padStart(2,'0'):full; }
+function isValidDateKey(value){
+  const m=str(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if(!m) return false;
+  const y=Number(m[1]), mo=Number(m[2]), d=Number(m[3]);
+  const dt=new Date(Date.UTC(y,mo-1,d));
+  return dt.getUTCFullYear()===y && dt.getUTCMonth()===mo-1 && dt.getUTCDate()===d;
+}
+function parseDateFlexible(v, fallbackYear=new Date().toLocaleString('en-US',{timeZone:TZ,year:'numeric'})){
+  if(typeof v==='number'){
+    const key=dateKey(v);
+    return isValidDateKey(key)?key:'';
+  }
+  const x=str(v);
+  const short=x.match(/^(\d{1,2})[\/\.\-](\d{1,2})$/);
+  if(short){
+    const key=String(fallbackYear)+'-'+String(+short[1]).padStart(2,'0')+'-'+String(+short[2]).padStart(2,'0');
+    return isValidDateKey(key)?key:'';
+  }
+  const full=dateKey(x);
+  return isValidDateKey(full)?full:'';
+}
 function extractMoveDate(action, originalDate){
   const s=str(action).replace(/[\s　]+/g,'');
   const patterns=[
@@ -1105,11 +1125,13 @@ function parseRawCourseCell(cell, teacher, weekday, year = new Date().getFullYea
 function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
   const out=[];
   for(const note of item.annotations||[]){
-    const text=str(note).replace(/\s+/g,'');
+    // 保留原始空白，避免「10/9 1100-1230」去空白後被誤讀成「10/91 100-1230」。
+    const rawText=str(note);
+    const text=rawText.replace(/\s+/g,'');
     let m;
-    // 指定日期另有新時段，例如「10/9 0900-1030」：同一天調整時間，不當作整日停課。
-    const sameDayTime=/^(\d{1,2})\/(\d{1,2})(?:\([^)]*\))?(\d{1,2}:?\d{2})[-~～至](\d{1,2}:?\d{2})$/;
-    const sameDayMatch=text.match(sameDayTime);
+    // 日期與新時段之間必須有分隔空白，避免把時間的首位數字併入日期。
+    const sameDayTime=/^(\d{1,2})\/(\d{1,2})\s+(\d{1,2}:?\d{2})[-~～至](\d{1,2}:?\d{2})$/;
+    const sameDayMatch=rawText.match(sameDayTime);
     if(sameDayMatch){
       const d=parseDateFlexible(sameDayMatch[1]+'/'+sameDayMatch[2],year);
       const newStart=timeKey(sameDayMatch[3]), newEnd=timeKey(sameDayMatch[4]);
