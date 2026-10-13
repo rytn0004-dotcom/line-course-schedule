@@ -1122,41 +1122,101 @@ function parseRawCourseCell(cell, teacher, weekday, year = new Date().getFullYea
   return out;
 }
 
+function addMinutesToTime(value, minutes){
+  const t=timeKey(value);
+  if(!t) return '';
+  const [hh,mm]=t.split(':').map(Number);
+  const total=(hh*60+mm+minutes+1440)%1440;
+  return String(Math.floor(total/60)).padStart(2,'0')+':'+String(total%60).padStart(2,'0');
+}
+
 function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
   const out=[];
+  const base={
+    id:'',fixedId:'',weekday:item.weekday||'',time:item.time||item.originalTime||'',
+    student:item.student,course:item.course,teacher:item.teacher,site:item.site,
+    source:'開學課表'
+  };
   for(const note of item.annotations||[]){
-    // 保留原始空白，避免「10/9 1100-1230」去空白後被誤讀成「10/91 100-1230」。
     const rawText=str(note);
     const text=rawText.replace(/\s+/g,'');
     let m;
-    // 日期與新時段之間必須有分隔空白，避免把時間的首位數字併入日期。
+
+    // 特例：「9/28p調9/21、10/5、10/12各+30min」
+    // 這是指定日期各自延後，不可只解析第一個「調」的目標日期。
+    const multiOffset=text.match(/(\d{1,2})\/(\d{1,2})p?調\s*(\d{1,2})\/(\d{1,2})[、,，]\s*(\d{1,2})\/(\d{1,2})[、,，]\s*(\d{1,2})\/(\d{1,2})各\+(\d{1,2})(?:min|分鐘)/i);
+    if(multiOffset){
+      const targets=[
+        parseDateFlexible(multiOffset[3]+'/'+multiOffset[4],year),
+        parseDateFlexible(multiOffset[5]+'/'+multiOffset[6],year),
+        parseDateFlexible(multiOffset[7]+'/'+multiOffset[8],year)
+      ].filter(Boolean);
+      const delta=Number(multiOffset[9]);
+      if(targets.length===3 && Number.isFinite(delta) && delta>0 && delta<=180){
+        for(const d of targets){
+          out.push({
+            ...base,originalDate:d,originalTime:item.time,
+            action:'改時間',newDate:d,newTime:addMinutesToTime(item.time,delta),
+            newEndTime:addMinutesToTime(item.endTime,delta),
+            note:'來源：開學課表；'+note+'（'+d+' 調整 '+delta+' 分鐘）'
+          });
+        }
+      }else{
+        console.warn('[PREVIEW-PARSE-WARNING] 無法完整解析多日期調整：',note);
+      }
+      continue;
+    }
+
+    // 同日改時段，例如「10/9 0900-1030」。
+    // 保留完整下課時間，不只記錄開始時間。
     const sameDayTime=/^(\d{1,2})\/(\d{1,2})\s+(\d{1,2}:?\d{2})[-~～至](\d{1,2}:?\d{2})$/;
     const sameDayMatch=rawText.match(sameDayTime);
     if(sameDayMatch){
       const d=parseDateFlexible(sameDayMatch[1]+'/'+sameDayMatch[2],year);
       const newStart=timeKey(sameDayMatch[3]), newEnd=timeKey(sameDayMatch[4]);
-      if(d && newStart && newEnd) out.push({id:'',fixedId:'',originalDate:d,originalTime:item.time,action:'改時間',newDate:d,newTime:newStart,student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note+'（調整後時段 '+newStart+'-'+newEnd+'）',source:'開學課表'});
+      if(d && newStart && newEnd) out.push({
+        ...base,originalDate:d,originalTime:item.time,action:'改時間',
+        newDate:d,newTime:newStart,newEndTime:newEnd,
+        note:'來源：開學課表；'+note+'（調整後時段 '+newStart+'-'+newEnd+'）'
+      });
+      continue;
     }
+
+    // 一般調課，例如「10/10p調10/9b」。
     const moveRe=/(\d{1,2})\/(\d{1,2})[^()]*?調\s*(\d{1,2})\/(\d{1,2})/g;
     while((m=moveRe.exec(text))){
       const from=parseDateFlexible(m[1]+'/'+m[2],year);
       const to=parseDateFlexible(m[3]+'/'+m[4],year);
-      if(from && to) out.push({id:'',fixedId:'',originalDate:from,originalTime:item.time,action:'調課',newDate:to,newTime:item.time,student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note,source:'開學課表'});
+      if(from && to) out.push({
+        ...base,originalDate:from,originalTime:item.time,action:'調課',
+        newDate:to,newTime:item.time,newEndTime:item.endTime,
+        note:'來源：開學課表；'+note
+      });
     }
+
+    // 請假和調課分開判斷；「10/10p調10/9b」不可同時產生請假紀錄。
     const leaveRe=/(\d{1,2})\/(\d{1,2})[^0-9]*(?:請假|p(?:調|$))/gi;
     while((m=leaveRe.exec(text))){
       const d=parseDateFlexible(m[1]+'/'+m[2],year);
-      if(d && !/調/.test(text)) out.push({id:'',fixedId:'',originalDate:d,originalTime:item.time,action:'請假',newDate:d,newTime:item.time,student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note,source:'開學課表'});
+      if(d && !/調/.test(text)) out.push({
+        ...base,originalDate:d,originalTime:item.time,action:'請假',
+        newDate:d,newTime:item.time,newEndTime:item.endTime,
+        note:'來源：開學課表；'+note
+      });
     }
+
     const addRe=/(\d{1,2})\/(\d{1,2})[^0-9]*?(?:補課|加課)/g;
     while((m=addRe.exec(text))){
       const d=parseDateFlexible(m[1]+'/'+m[2],year);
-      if(d) out.push({id:'',fixedId:'',originalDate:'',originalTime:'',action:'補課',newDate:d,newTime:item.time,student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note,source:'開學課表'});
+      if(d) out.push({
+        ...base,originalDate:'',originalTime:'',action:'補課',
+        newDate:d,newTime:item.time,newEndTime:item.endTime,
+        note:'來源：開學課表；'+note
+      });
     }
   }
   return out;
 }
-
 function rawFixedLogicalKey(x){
   return [norm(x.weekday),timeKey(x.time),compact(x.student),compact(x.teacher)].join('|');
 }
@@ -1176,9 +1236,14 @@ function parseRawSchedule(rows, year = new Date().getFullYear()){
   const fixed=[], adjustments=[];
   for(let r=1;r<rows.length;r++){
     const row=rows[r]||[];
-    // 老師欄可能同時放可排課時間等備註；只用第一行作為老師姓名，並去掉姓名後的括號註記。
     const teacherCell=str(row[teacherCol]);
-    const teacher=str((teacherCell.split(/\r?\n/)[0]||'').replace(/[（(][^）)]*[）)]/g,'')).trim();
+    let teacherLine=str((teacherCell.split(/\r?\n/)[0]||'')).trim();
+    if(/[（(](?:\d{1,2}\/\d{1,2}|請假|調課|代課|停課|老師|備註)/.test(teacherLine)){
+      teacherLine=teacherLine.replace(/[（(].*$/,'');
+    }else{
+      teacherLine=teacherLine.replace(/[（(][^）)]*[）)]/g,'');
+    }
+    const teacher=str(teacherLine).trim();
     if(!teacher) continue;
     for(const [col,weekday] of Object.entries(weekdayCols)){
       for(const item of parseRawCourseCell(row[Number(col)],teacher,weekday,year)){
@@ -1187,7 +1252,20 @@ function parseRawSchedule(rows, year = new Date().getFullYear()){
       }
     }
   }
-  return {fixed,adjustments};
+  // 相同來源註記可能因課表格子重複而被解析多次；先按完整語意去重，再分配 ID。
+  const uniqueAdjustments=[];
+  const seenAdjustments=new Set();
+  for(const a of adjustments){
+    const key=[
+      a.originalDate||'',a.originalTime||'',a.action||'',a.newDate||'',
+      a.newTime||'',a.newEndTime||'',compact(a.student||''),compact(a.teacher||''),
+      compact(a.course||''),compact(a.site||''),compact(a.note||'')
+    ].join('|');
+    if(seenAdjustments.has(key)) continue;
+    seenAdjustments.add(key);
+    uniqueAdjustments.push(a);
+  }
+  return {fixed,adjustments:uniqueAdjustments};
 }
 
 function matchRawFixedIds(rawFixed, existingFixedRows){
@@ -1227,7 +1305,7 @@ function assignPreviewAdjustmentIds(adjustments, existingAdjustRows){
   }
   let max=0;
   for(const x of existing){ const m=x.id.match(/^ADJ(\d+)$/i); if(m) max=Math.max(max,Number(m[1])); }
-  const keyOf=x=>[x.fixedId||'',x.originalDate||'',x.originalTime||'',x.action||'',x.newDate||'',x.newTime||'',compact(x.student||'')].join('|');
+  const keyOf=x=>[x.fixedId||'',x.originalDate||'',x.originalTime||'',x.action||'',x.newDate||'',x.newTime||'',x.newEndTime||'',compact(x.student||''),compact(x.teacher||'')].join('|');
   const byKey=new Map(existing.map(x=>[keyOf(x),x.id]));
   const used=new Set(existing.map(x=>x.id));
   return adjustments.map(x=>{
