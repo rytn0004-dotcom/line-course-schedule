@@ -1085,7 +1085,16 @@ function parseRawCourseCell(cell, teacher, weekday, year = new Date().getFullYea
     let rest=str(tm[3]);
     if(!start || !end || !rest) continue;
     const annotations=[];
-    rest=rest.replace(/[（(]([^）)]*)[）)]/g,(_,x)=>{ annotations.push(str(x)); return ''; }).trim();
+    // 團班括號有時是學生名單，不是調課備註；保留名單，避免轉譯時遺失學生。
+    rest=rest.replace(/[（(]([^）)]*)[）)]/g,(whole,x,offset)=>{
+      const before=rest.slice(0,offset);
+      const groupRoster=/團班\s*$/.test(before) &&
+        !/[0-9]/.test(x) &&
+        !/(?:調|請假|加時|加課|補課|改|代|僅|\bp\b)/i.test(x);
+      if(groupRoster) return whole;
+      annotations.push(str(x));
+      return '';
+    }).trim();
     const student=rest.replace(/\s+/g,' ').trim();
     if(!student) continue;
     out.push({teacher,weekday,time:start,endTime:end,student,course:'',site:'',annotations,raw:line});
@@ -1098,6 +1107,14 @@ function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
   for(const note of item.annotations||[]){
     const text=str(note).replace(/\s+/g,'');
     let m;
+    // 指定日期另有新時段，例如「10/9 0900-1030」：同一天調整時間，不當作整日停課。
+    const sameDayTime=/^(\d{1,2})\/(\d{1,2})(?:\([^)]*\))?(\d{1,2}:?\d{2})[-~～至](\d{1,2}:?\d{2})$/;
+    const sameDayMatch=text.match(sameDayTime);
+    if(sameDayMatch){
+      const d=parseDateFlexible(sameDayMatch[1]+'/'+sameDayMatch[2],year);
+      const newStart=timeKey(sameDayMatch[3]), newEnd=timeKey(sameDayMatch[4]);
+      if(d && newStart && newEnd) out.push({id:'',fixedId:'',originalDate:d,originalTime:item.time,action:'改時間',newDate:d,newTime:newStart,student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note+'（調整後時段 '+newStart+'-'+newEnd+'）',source:'開學課表'});
+    }
     const moveRe=/(\d{1,2})\/(\d{1,2})[^()]*?調\s*(\d{1,2})\/(\d{1,2})/g;
     while((m=moveRe.exec(text))){
       const from=parseDateFlexible(m[1]+'/'+m[2],year);
@@ -1127,14 +1144,19 @@ function parseRawSchedule(rows, year = new Date().getFullYear()){
   const header=rows[0]||[];
   const teacherCol=header.findIndex(x=>/^\s*老師\s*$/.test(str(x)));
   const weekdayCols={};
+  const weekdayNames={ '1':'一','2':'二','3':'三','4':'四','5':'五','6':'六','7':'日' };
   for(let i=0;i<header.length;i++){
-    const m=str(header[i]).match(/^星期([一二三四五六日])$/);
-    if(m) weekdayCols[i]=m[1];
+    const label=str(header[i]).replace(/\s+/g,'');
+    const m=label.match(/^星期([一二三四五六日1-7])$/);
+    if(m) weekdayCols[i]=weekdayNames[m[1]]||m[1];
   }
   if(teacherCol<0 || !Object.keys(weekdayCols).length) throw new Error('「開學課表」格式不符合目前預期：需要「老師」及星期欄位。');
   const fixed=[], adjustments=[];
   for(let r=1;r<rows.length;r++){
-    const row=rows[r]||[], teacher=str(row[teacherCol]);
+    const row=rows[r]||[];
+    // 老師欄可能同時放可排課時間等備註；只用第一行作為老師姓名，並去掉姓名後的括號註記。
+    const teacherCell=str(row[teacherCol]);
+    const teacher=str((teacherCell.split(/\r?\n/)[0]||'').replace(/[（(][^）)]*[）)]/g,'')).trim();
     if(!teacher) continue;
     for(const [col,weekday] of Object.entries(weekdayCols)){
       for(const item of parseRawCourseCell(row[Number(col)],teacher,weekday,year)){
