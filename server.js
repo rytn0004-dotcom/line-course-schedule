@@ -1115,6 +1115,13 @@ function parseRawCourseCell(cell, teacher, weekday, year = new Date().getFullYea
       annotations.push(str(x));
       return '';
     }).trim();
+    // 部分課表儲存格的備註括號沒有結尾（例如「繹桓(9/25p調10/5b，」）。
+    // 若未閉合括號內含調課／請假等註記，將它視為備註而非學生姓名尾巴。
+    const danglingNote=rest.match(/[（(]([^）)]*(?:調|請假|加時|加課|補課|改|代|僅|p)[^）)]*)$/i);
+    if(danglingNote){
+      annotations.push(str(danglingNote[1]).replace(/[，,、;；]+$/,''));
+      rest=rest.slice(0,danglingNote.index).trim();
+    }
     const student=rest.replace(/\s+/g,' ').trim();
     if(!student) continue;
     out.push({teacher,weekday,time:start,endTime:end,student,course:'',site:'',annotations,raw:line});
@@ -1156,7 +1163,9 @@ function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
         for(const d of targets){
           out.push({
             ...base,originalDate:d,originalTime:item.time,
-            action:'改時間',newDate:d,newTime:addMinutesToTime(item.time,delta),
+            // 「各+30min」代表延長課程，不是把開始時間往後移。
+            // 例如原本 20:00-21:30，延長 30 分鐘後應為 20:00-22:00。
+            action:'改時間',newDate:d,newTime:item.time,
             newEndTime:addMinutesToTime(item.endTime,delta),
             note:'來源：開學課表；'+note+'（'+d+' 調整 '+delta+' 分鐘）'
           });
