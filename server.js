@@ -1348,6 +1348,103 @@ app.get('/preview-source',async(req,res)=>{
   }
 });
 
+
+
+// Read-only audit: compare the current source preview against the existing normalized
+// 固定課表／調課課程 rows. This does not write sheets, build courses, or send LINE.
+function auditSourceAgainstExisting(rawRows, fixedRows, adjustRows, year){
+  const parsed=parseRawSchedule(rawRows,year);
+  const sourceFixed=matchRawFixedIds(parsed.fixed,fixedRows);
+  const sourceAdjust=assignPreviewAdjustmentIds(parsed.adjustments.map(x=>({
+    ...x,
+    fixedId:sourceFixed.find(f=>rawFixedLogicalKey(f)===rawFixedLogicalKey(x))?.id||''
+  })),adjustRows);
+
+  const fixedHr=findHeaderRow(fixedRows,['固定課表ID','星期','上課時間','學生','老師','校區','有效迄日','啟用']);
+  const existingFixed=[];
+  if(fixedHr>=0){
+    const h=hmap(fixedRows[fixedHr]);
+    for(let i=fixedHr+1;i<fixedRows.length;i++){
+      const r=fixedRows[i]||[], id=str(r[h['固定課表ID']]);
+      if(!id) continue;
+      const rawTime=str(r[h['上課時間']]), range=parseTimeRange(rawTime);
+      existingFixed.push({
+        id,weekday:str(r[h['星期']]),time:range.start||timeKey(rawTime),endTime:range.end,
+        student:str(r[h['學生']])||extractStudentFromTime(rawTime),teacher:str(r[h['老師']]),
+        rawTime
+      });
+    }
+  }
+
+  const identity=x=>[norm(x.weekday),compact(x.student),compact(x.teacher)].join('|');
+  const sourceGroups=new Map(), existingGroups=new Map();
+  for(const x of sourceFixed){ const k=identity(x); if(!sourceGroups.has(k))sourceGroups.set(k,[]); sourceGroups.get(k).push(x); }
+  for(const x of existingFixed){ const k=identity(x); if(!existingGroups.has(k))existingGroups.set(k,[]); existingGroups.get(k).push(x); }
+  const fixedChanges=[], sourceOnly=[], existingOnly=[];
+  const allKeys=new Set([...sourceGroups.keys(),...existingGroups.keys()]);
+  const slot=x=>[timeKey(x.time),timeKey(x.endTime)].join('|');
+  for(const k of allKeys){
+    const ss=[...(sourceGroups.get(k)||[])], ee=[...(existingGroups.get(k)||[])];
+    // Match exact time slots first so one changed slot does not mislabel every class
+    // for the same student/teacher/day as a change.
+    for(let i=ss.length-1;i>=0;i--){
+      const j=ee.findIndex(y=>slot(y)===slot(ss[i]));
+      if(j>=0){ ss.splice(i,1); ee.splice(j,1); }
+    }
+    while(ss.length && ee.length){
+      const s=ss.shift(), e=ee.shift();
+      const fields=[];
+      if(timeKey(s.time)!==timeKey(e.time)) fields.push({field:'上課時間',previous:e.time||'未設定',current:s.time||'未設定'});
+      if(timeKey(s.endTime)!==timeKey(e.endTime)) fields.push({field:'下課時間',previous:e.endTime||'未設定',current:s.endTime||'未設定'});
+      if(compact(s.teacher)!==compact(e.teacher)) fields.push({field:'老師',previous:e.teacher||'未設定',current:s.teacher||'未設定'});
+      if(fields.length) fixedChanges.push({
+        type:'欄位變更',student:s.student,weekday:s.weekday,
+        fixedId:e.id,sourceId:s.id,fields,sourceRaw:s.raw||'',existingRaw:e.rawTime||''
+      });
+    }
+    sourceOnly.push(...ss.map(s=>({type:'來源有、固定課表無',student:s.student,teacher:s.teacher,weekday:s.weekday,time:s.time,endTime:s.endTime,sourceId:s.id,raw:s.raw||''})));
+    existingOnly.push(...ee.map(e=>({type:'固定課表有、來源無',student:e.student,teacher:e.teacher,weekday:e.weekday,time:e.time,endTime:e.endTime,fixedId:e.id,raw:e.rawTime||''})));
+  }
+
+  const existingAdjust=parseAdjust(adjustRows);
+  const adjKey=x=>[
+    x.originalDate||'',timeKey(x.originalTime),norm(x.action),x.newDate||'',
+    timeKey(x.newTime),compact(x.student)
+  ].join('|');
+  const existingAdjustKeys=new Set(existingAdjust.map(adjKey));
+  const sourceAdjustKeys=new Set(sourceAdjust.map(adjKey));
+  const sourceAdjustOnly=sourceAdjust.filter(x=>!existingAdjustKeys.has(adjKey(x))).map(x=>({
+    id:x.id,type:'來源異動尚未對應到調課課程',student:x.student,teacher:x.teacher,
+    action:x.action,originalDate:x.originalDate,originalTime:x.originalTime,
+    newDate:x.newDate,newTime:x.newTime,newEndTime:x.newEndTime,note:x.note
+  }));
+  const existingAdjustOnly=existingAdjust.filter(x=>!sourceAdjustKeys.has(adjKey(x))).map(x=>({
+    id:x.id,type:'調課課程中有、開學課表預覽無對應',student:x.student,teacher:x.teacher,
+    action:x.action,originalDate:x.originalDate,originalTime:x.originalTime,
+    newDate:x.newDate,newTime:x.newTime,note:x.note
+  }));
+
+  return {
+    ok:true,mode:'read-only-audit',writesPerformed:false,buildExecuted:false,lineMessagesSent:false,
+    sourceSheet:'開學課表',comparisonBaseline:['固定課表','調課課程'],
+    note:'這是目前來源與既有整理表的差異比對，不是 Google Sheets 編輯者／版本歷史紀錄。',
+    fixed:{changed:fixedChanges.length,sourceOnly:sourceOnly.length,existingOnly:existingOnly.length,changes:fixedChanges.slice(0,200),sourceOnlyRows:sourceOnly.slice(0,200),existingOnlyRows:existingOnly.slice(0,200)},
+    adjustments:{sourceOnly:sourceAdjustOnly.length,existingOnly:existingAdjustOnly.length,sourceOnlyRows:sourceAdjustOnly.slice(0,200),existingOnlyRows:existingAdjustOnly.slice(0,200),limitation:'調課課程目前沒有新下課時間欄，因此本次無法以該工作表的既有資料驗證 newEndTime。'},
+    counts:{sourceFixed:sourceFixed.length,existingFixed:existingFixed.length,sourceAdjustments:sourceAdjust.length,existingAdjustments:existingAdjust.length}
+  };
+}
+
+app.get('/audit-source',async(req,res)=>{
+  try{
+    const year=Number(req.query.year||new Date().getFullYear());
+    const [rawRows,fixedRows,adjustRows]=await readRawSourcePreview();
+    res.json(auditSourceAgainstExisting(rawRows,fixedRows,adjustRows,year));
+  }catch(e){
+    console.error('Read-only source audit failed',e);
+    res.status(500).json({ok:false,mode:'read-only-audit',writesPerformed:false,buildExecuted:false,lineMessagesSent:false,error:e.message});
+  }
+});
+
 app.listen(PORT,()=>console.log(`LINE Course Schedule Manager v1.2 listening on ${PORT}`));
 // Safety: do not build or write Google Sheets automatically at startup or on a timer.
 // Use the explicit /build endpoint only after reviewing the source preview.
