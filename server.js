@@ -1163,10 +1163,10 @@ function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
         for(const d of targets){
           out.push({
             ...base,originalDate:d,originalTime:item.time,
-            // 「各+30min」代表延長課程，不是把開始時間往後移。
-            // 例如原本 20:00-21:30，延長 30 分鐘後應為 20:00-22:00。
+            // 這種備註所在列的時間區間已是延長後時段（例如 20:00-22:00）。
+            // 開始時間不變；使用該列下課時間，避免把 +30 分鐘再加第二次。
             action:'改時間',newDate:d,newTime:item.time,
-            newEndTime:addMinutesToTime(item.endTime,delta),
+            newEndTime:item.endTime,
             note:'來源：開學課表；'+note+'（'+d+' 調整 '+delta+' 分鐘）'
           });
         }
@@ -1256,7 +1256,12 @@ function parseRawSchedule(rows, year = new Date().getFullYear()){
     if(!teacher) continue;
     for(const [col,weekday] of Object.entries(weekdayCols)){
       for(const item of parseRawCourseCell(row[Number(col)],teacher,weekday,year)){
-        fixed.push(item);
+        const isDateSpecificExtension=(item.annotations||[]).some(note=>
+          /(\d{1,2})\/(\d{1,2})p?調\s*\d{1,2}\/\d{1,2}[、,，]\s*\d{1,2}\/\d{1,2}[、,，]\s*\d{1,2}\/\d{1,2}各\+\d{1,2}(?:min|分鐘)/i.test(str(note).replace(/\s+/g,''))
+        );
+        // 「指定日期各+30min」這一列是特定日期的調整說明，不是每週固定課。
+        // 保留其調整紀錄，但避免同一學生同時被建立 20:00-21:30 與 20:00-22:00 兩筆固定課。
+        if(!isDateSpecificExtension) fixed.push(item);
         adjustments.push(...parseRawAdjustmentAnnotations(item,year));
       }
     }
