@@ -1206,6 +1206,15 @@ app.get('/build',async(req,res)=>{
 });
 
 
+function stripScheduleAnnotation(value){
+  return str(value)
+    // 開學課表常見未閉合註記，例如「繹桓(9/25p調10/5b」。
+    .replace(/[（(](?=[^）)]*(?:\d{1,2}\/\d{1,2}|調課|調|請假|加時|加課|補課|改課|代課|停課|僅|\bp\b|\bb\b))[\s\S]*$/i,'')
+    .trim();
+}
+function isUnavailableSlot(value){
+  return /^(?:無法排課|時段不能排課|不能排課|不可排課|無法安排|休息時段)$/i.test(str(value).replace(/[\s　]/g,''));
+}
 function parseRawCourseCell(cell, teacher, weekday, year = new Date().getFullYear()){
   const lines=str(cell).split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
   const out=[];
@@ -1216,18 +1225,26 @@ function parseRawCourseCell(cell, teacher, weekday, year = new Date().getFullYea
     let rest=str(tm[3]);
     if(!start || !end || !rest) continue;
     const annotations=[];
-    // 團班括號有時是學生名單，不是調課備註；保留名單，避免轉譯時遺失學生。
+    // 不可排課時段是空檔，不是課程；不可建立成固定課表。
+    if(isUnavailableSlot(rest)) continue;
+    // 團班括號有時是學生名單；只有在團班名稱後、且不含日期／調課關鍵字時才保留。
     rest=rest.replace(/[（(]([^）)]*)[）)]/g,(whole,x,offset)=>{
       const before=rest.slice(0,offset);
       const groupRoster=/團班\s*$/.test(before) &&
         !/[0-9]/.test(x) &&
-        !/(?:調|請假|加時|加課|補課|改|代|僅|\bp\b)/i.test(x);
+        !/(?:調|請假|加時|加課|補課|改|代|僅|\bp\b|\bb\b)/i.test(x);
       if(groupRoster) return whole;
       annotations.push(str(x));
       return '';
     }).trim();
+    // 有些註記缺少右括號，前面的配對括號處理不到；擷取並移除尾端註記。
+    const tail=rest.match(/[（(]([^）)]*(?:\d{1,2}\/\d{1,2}|調課|調|請假|加時|加課|補課|改課|代課|停課|僅|\bp\b|\bb\b)[^）)]*)$/i);
+    if(tail){
+      annotations.push(str(tail[1]));
+      rest=rest.slice(0,tail.index).trim();
+    }
     const student=rest.replace(/\s+/g,' ').trim();
-    if(!student) continue;
+    if(!student || isUnavailableSlot(student)) continue;
     out.push({teacher,weekday,time:start,endTime:end,student,course:'',site:'',annotations,raw:line});
   }
   return out;
@@ -1271,7 +1288,7 @@ function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
 function rawFixedLogicalKey(x){
   const rawTime=str(x.time);
   const start=parseTimeRange(rawTime).start || timeKey(rawTime);
-  return [norm(x.weekday),start,compact(x.student),compact(x.teacher)].join('|');
+  return [norm(x.weekday),start,compact(stripScheduleAnnotation(x.student)),compact(stripScheduleAnnotation(x.teacher))].join('|');
 }
 
 function parseRawSchedule(rows, year = new Date().getFullYear()){
@@ -1291,7 +1308,7 @@ function parseRawSchedule(rows, year = new Date().getFullYear()){
     const row=rows[r]||[];
     // 老師欄可能同時放可排課時間等備註；只用第一行作為老師姓名，並去掉姓名後的括號註記。
     const teacherCell=str(row[teacherCol]);
-    const teacher=str((teacherCell.split(/\r?\n/)[0]||'').replace(/[（(][^）)]*[）)]/g,'')).trim();
+    const teacher=stripScheduleAnnotation((teacherCell.split(/\r?\n/)[0]||'').replace(/[（(][^）)]*[）)]/g,(whole,x,offset,before)=>/(?:團班|班別)/.test(before||'') && !/[0-9]/.test(x) ? whole : ''));
     if(!teacher) continue;
     for(const [col,weekday] of Object.entries(weekdayCols)){
       for(const item of parseRawCourseCell(row[Number(col)],teacher,weekday,year)){
