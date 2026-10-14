@@ -233,7 +233,9 @@ function parseFixed(rows){
     if(enabled!=='是') continue;
     const weekday=norm(r[h['星期']]); const rawTime=str(r[h['上課時間']]); const range=parseTimeRange(rawTime); const time=range.start||timeKey(rawTime);
     if(!weekday||!time) continue;
-    out.push({id,weekday,time,endTime:range.end,student:str(r[h['學生']])||extractStudentFromTime(rawTime),course:str(r[h['課程']]),teacher:str(r[h['老師']]),site:str(r[h['校區']]),until:dateKey(r[h['有效迄日']]),template:str(r[h['通知模板']]),note:str(r[h['備註']]),rawTime});
+    const student=str(r[h['學生']])||extractStudentFromTime(rawTime);
+    if(!student || isUnavailableSlot(student)) continue;
+    out.push({id,weekday,time,endTime:range.end,student,course:str(r[h['課程']]),teacher:str(r[h['老師']]),site:str(r[h['校區']]),until:dateKey(r[h['有效迄日']]),template:str(r[h['通知模板']]),note:str(r[h['備註']]),rawTime});
   }
   // 診斷指定學生為何沒有進入「實際課程」。只記錄少禹相關資料，不改變既有排課結果。
   const diagnosticStudents=['陳少禹','少禹'];
@@ -594,6 +596,7 @@ function buildRows(fixed, adjusts, fromDate, days){
   for(let d=fromDate;d<=toDate;d=addDays(d,1)){
     const wd=weekdayLabel(d);
     for(const f of fixed){
+      if(!str(f.student) || isUnavailableSlot(f.student)) continue;
       if(f.until&&/^\d{4}-\d{2}-\d{2}$/.test(f.until)&&d>f.until)continue;
       if(norm(f.weekday)!==norm(wd))continue;
 
@@ -807,6 +810,8 @@ function makeReminderRows(actual, contacts, templates, settings, fixedTemplateBy
 
   for(const c of actual){
     if(c.adjustResult==='取消') continue;
+    // 沒有有效學生／學生成員，或是「無法排課」佔位文字，不建立任何提醒。
+    if(!str(c.student) || isUnavailableSlot(c.student)) continue;
     const slot=previousReminderSlot(c.date,settings);
     if(!slot.sendDate || !slot.sendTime) continue;
     const dateLabel=c.date.replaceAll('-','/');
@@ -1060,6 +1065,22 @@ function columnLetter(n){
 // 每次手動呼叫 /build 時，先讀取「開學課表」並把尚未存在的固定課表／調課資料補入。
 // 安全原則：只新增來源中缺少的列，不刪除或覆寫現有列；既有人工資料保留。
 async function syncSourceIntoSchedule(){
+  // 在「系統設定」新增可手動切換的「轉譯開學課表」；未設定時預設開啟。
+  const settingsRead=await retry('read source translation setting',()=>sheets.spreadsheets.values.get({spreadsheetId:SHEET_ID,range:qsheet('系統設定')+'!A:Z'}));
+  const settingsRows=settingsRead.data.values||[];
+  let translationRow=-1;
+  for(let i=0;i<settingsRows.length;i++){
+    if(str(settingsRows[i]?.[0])==='轉譯開學課表'){ translationRow=i+1; break; }
+  }
+  let translateSource='是';
+  if(translationRow<0){
+    await retry('add source translation setting',()=>sheets.spreadsheets.values.append({spreadsheetId:SHEET_ID,range:qsheet('系統設定')+'!A:B',valueInputOption:'RAW',insertDataOption:'INSERT_ROWS',requestBody:{values:[['轉譯開學課表','是']]}}));
+  }else{
+    translateSource=str(settingsRows[translationRow-1]?.[1]) || '是';
+  }
+  if(!['是','yes','true','1','啟用'].includes(norm(translateSource))){
+    return {sourceSheet:'開學課表',translationEnabled:false,sourceFixedParsed:0,sourceAdjustmentsParsed:0,fixedAdded:0,fixedCorrected:0,adjustmentsAdded:0,existingRowsPreserved:true,skipped:true};
+  }
   const year=Number(todayKey().slice(0,4));
   const [rawRows,fixedRows,adjustRows]=await readRawSourcePreview();
   const parsed=parseRawSchedule(rawRows,year);
@@ -1191,7 +1212,8 @@ async function syncSourceIntoSchedule(){
     fixedAdded:fixedOutput.length,
     fixedCorrected:fixedUpdates.length,
     adjustmentsAdded:adjustOutput.length,
-    existingRowsPreserved:true
+    existingRowsPreserved:true,
+    translationEnabled:true
   };
 }
 
@@ -1248,7 +1270,8 @@ function stripScheduleAnnotation(value){
     .trim();
 }
 function isUnavailableSlot(value){
-  return /^(?:無法排課|時段不能排課|不能排課|不可排課|無法安排|休息時段)$/i.test(str(value).replace(/[\s　]/g,''));
+  const cleaned=str(value).replace(/[\s　]/g,'').replace(/^\d{1,2}:?\d{2}/,'').replace(/^[：:、，,]+/,'');
+  return /^(?:無法排課|時段不能排課|不能排課|不可排課|無法安排|休息時段)$/i.test(cleaned);
 }
 function parseRawCourseCell(cell, teacher, weekday, year = new Date().getFullYear()){
   const lines=str(cell).split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
