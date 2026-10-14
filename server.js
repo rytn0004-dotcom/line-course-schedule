@@ -1010,10 +1010,16 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
     const inWindow = old.date && old.date>=fromDate && old.date<=addDays(fromDate,days-1);
     if(!inWindow || !isGenerated) continue;
 
-    // 沒有被任何目前應存在的提醒配對到，代表這是重複或已失效的舊列；
-    // 清空內容並取消確認，避免舊提醒繼續發送。
+    // 沒有被任何目前應存在的提醒配對到，代表這是重複或已失效的舊列。
+    // 若已清空學生／課程／訊息且「確認發送」為「否」，保留作為稽核紀錄，不重複寫入或重複計數。
     const row=old.values.slice();
     while(row.length<width) row.push('');
+    const alreadyDisabled =
+      !str(row[h['學生/學生成員']]) &&
+      !str(row[h['課程']]) &&
+      !str(row[h['訊息內容']]) &&
+      norm(row[h['確認發送']])==='否';
+    if(alreadyDisabled) continue;
     if(h['學生/學生成員']!==undefined) row[h['學生/學生成員']]='';
     if(h['課程']!==undefined) row[h['課程']]='';
     if(h['訊息內容']!==undefined) row[h['訊息內容']]='';
