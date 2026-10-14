@@ -1155,6 +1155,19 @@ async function syncSourceIntoSchedule(){
     if(fh['備註']!==undefined) row[fh['備註']]='來源：開學課表自動同步；已排除不可排課時段';
     fixedUpdates.push({rowNumber:old.rowNumber,values:row.slice(0,fixedHeaders.length)});
   }
+  // 使用者已確認目前有效課程的預設校區為「愛學館信義光復校」。
+  // 將有效、具學生姓名、校區空白的既有列補上預設校區；不改動停用列或不可排課佔位列。
+  const alreadyUpdatedRows=new Set(fixedUpdates.map(u=>u.rowNumber));
+  for(const [id,old] of existingFixedById){
+    if(alreadyUpdatedRows.has(old.rowNumber)) continue;
+    const row=old.values.slice();
+    while(row.length<fixedHeaders.length) row.push('');
+    const student=str(row[fh['學生']]);
+    if(normValue(row[fh['啟用']])!=='是' || !student || isUnavailableSlot(student)) continue;
+    if(str(row[fh['校區']])) continue;
+    row[fh['校區']]=DEFAULT_SITE;
+    fixedUpdates.push({rowNumber:old.rowNumber,values:row.slice(0,fixedHeaders.length)});
+  }
   if(fixedUpdates.length){
     await retry('correct generated fixed schedule rows',()=>sheets.spreadsheets.values.batchUpdate({
       spreadsheetId:SHEET_ID,
