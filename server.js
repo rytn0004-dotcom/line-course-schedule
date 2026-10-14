@@ -1069,6 +1069,7 @@ async function syncSourceIntoSchedule(){
   const fh=hmap(fixedHeaders);
   const existingFixedIds=new Set();
   const existingFixedKeys=new Set();
+  const existingFixedById=new Map();
   for(let i=fixedHeaderRow+1;i<fixedRows.length;i++){
     const r=fixedRows[i]||[];
     const id=str(r[fh['固定課表ID']]);
@@ -1080,10 +1081,11 @@ async function syncSourceIntoSchedule(){
       student:str(r[fh['學生']]),
       teacher:str(r[fh['老師']])
     }));
+    existingFixedById.set(id,{rowNumber:i+1,values:r});
   }
   const matchedFixed=matchRawFixedIds(parsed.fixed,fixedRows);
   const fixedToAdd=matchedFixed.filter(x=>!existingFixedIds.has(x.id) && !existingFixedKeys.has(rawFixedLogicalKey(x)));
-  const fixedOutput=fixedToAdd.map(x=>{
+  const makeFixedRow=x=>{
     const row=new Array(fixedHeaders.length).fill('');
     const set=(name,value)=>{ if(fh[name]!==undefined) row[fh[name]]=value??''; };
     set('固定課表ID',x.id);
@@ -1095,16 +1097,48 @@ async function syncSourceIntoSchedule(){
     set('校區',x.site||'');
     set('有效迄日','');
     set('啟用','是');
-    // 例外日期／調課註記另寫入「調課課程」，避免同一備註被重複解析。
     set('備註','來源：開學課表自動同步');
     set('通知模板','家長一般/老師通知');
     return row;
-  });
+  };
+  const fixedOutput=fixedToAdd.map(makeFixedRow);
+  const fixedUpdates=[];
+  // 只校正由本程式建立的來源列；人工維護的固定課表不覆寫。
+  for(const x of matchedFixed){
+    const old=existingFixedById.get(x.id);
+    if(!old) continue;
+    const oldNote=fh['備註']===undefined?'':str(old.values[fh['備註']]);
+    if(!oldNote.includes('來源：開學課表自動同步')) continue;
+    const corrected=makeFixedRow(x);
+    if(JSON.stringify(old.values.slice(0,fixedHeaders.length))!==JSON.stringify(corrected)){
+      fixedUpdates.push({rowNumber:old.rowNumber,values:corrected});
+    }
+  }
+  // 已由舊版錯誤匯入的「無法排課」佔位列，不再當成課程；僅停用程式自動建立的列。
+  for(const [id,old] of existingFixedById){
+    const oldNote=fh['備註']===undefined?'':str(old.values[fh['備註']]);
+    const oldStudent=fh['學生']===undefined?'':str(old.values[fh['學生']]);
+    if(!oldNote.includes('來源：開學課表自動同步') || !isUnavailableSlot(oldStudent)) continue;
+    const row=old.values.slice();
+    while(row.length<fixedHeaders.length) row.push('');
+    if(fh['啟用']!==undefined) row[fh['啟用']]='否';
+    if(fh['備註']!==undefined) row[fh['備註']]='來源：開學課表自動同步；已排除不可排課時段';
+    fixedUpdates.push({rowNumber:old.rowNumber,values:row.slice(0,fixedHeaders.length)});
+  }
+  if(fixedUpdates.length){
+    await retry('correct generated fixed schedule rows',()=>sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId:SHEET_ID,
+      requestBody:{valueInputOption:'RAW',data:fixedUpdates.map(u=>({
+        range:qsheet('固定課表')+'!A'+u.rowNumber+':'+columnLetter(fixedHeaders.length)+u.rowNumber,
+        values:[u.values]
+      }))}
+    }));
+  }
   if(fixedOutput.length){
-    const start=fixedRows.length+1;
+    const startRow=fixedRows.length+1;
     await retry('append source fixed schedule',()=>sheets.spreadsheets.values.update({
       spreadsheetId:SHEET_ID,
-      range:qsheet('固定課表')+'!A'+start+':'+columnLetter(fixedHeaders.length)+(start+fixedOutput.length-1),
+      range:qsheet('固定課表')+'!A'+startRow+':'+columnLetter(fixedHeaders.length)+(startRow+fixedOutput.length-1),
       valueInputOption:'RAW',requestBody:{values:fixedOutput}
     }));
   }
@@ -1155,6 +1189,7 @@ async function syncSourceIntoSchedule(){
     sourceFixedParsed:parsed.fixed.length,
     sourceAdjustmentsParsed:parsed.adjustments.length,
     fixedAdded:fixedOutput.length,
+    fixedCorrected:fixedUpdates.length,
     adjustmentsAdded:adjustOutput.length,
     existingRowsPreserved:true
   };
