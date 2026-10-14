@@ -953,7 +953,7 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
     : [x.role,compact(x.recipient),x.date,x.time,compact(x.teacher),compact(x.site)].join('|');
   const logicalKeyForOld=old=>old.role==='老師'
     ? [old.role,compact(old.recipient),old.date,compact(String(old.values[h['老師']]||'')),compact(String(old.values[h['校區']]||''))].join('|')
-    : [old.role,compact(old.recipient),old.date,old.time,compact(String(old.values[h['老師']]||'')),compact(String(old.values[h['校區']]||''))].join('|');
+    : [old.role,compact(old.recipient),old.date,old.time,compact(String(old.values[h['老師']]||'')),compact(normalizeSite(old.values[h['校區']]))].join('|');
   const oldByLogicalKey=new Map();
   for(const old of parsed.rows){
     const isGenerated = /-(?:P|T)$/.test(old.id) || old.id.startsWith('MERGED-');
