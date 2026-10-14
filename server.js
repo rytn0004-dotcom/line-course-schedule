@@ -23,6 +23,7 @@ app.use(express.json());
 
 const WEEKDAYS = ['日','一','二','三','四','五','六'];
 const REMINDER_HEADERS = ['提醒ID','課程日期','上課時間','發送日期','發送時間','身分','收件人','學生/學生成員','課程','老師','校區','訊息內容','確認發送'];
+const DEFAULT_SITE = '愛學館信義光復校';
 const CORRECTION_HEADERS = ['日期','學生','原時間','校正動作','新時間','新課程','新老師','備註'];
 function normValue(v){ return String(v ?? '').trim().toLowerCase(); }
 
@@ -50,6 +51,7 @@ async function retry(label, fn){
 }
 function qsheet(name){ return `'${String(name).replace(/'/g,"''")}'`; }
 function str(v){ return String(v ?? '').trim(); }
+function normalizeSite(v){ return str(v) || DEFAULT_SITE; }
 function norm(v){ return str(v).replace(/\s+/g,''); }
 function split(v){ return str(v).split(/[、,，\/]/).map(s=>s.trim()).filter(Boolean); }
 function normHeader(v){
@@ -235,7 +237,7 @@ function parseFixed(rows){
     if(!weekday||!time) continue;
     const student=str(r[h['學生']])||extractStudentFromTime(rawTime);
     if(!student || isUnavailableSlot(student)) continue;
-    out.push({id,weekday,time,endTime:range.end,student,course:str(r[h['課程']]),teacher:str(r[h['老師']]),site:str(r[h['校區']]),until:dateKey(r[h['有效迄日']]),template:str(r[h['通知模板']]),note:str(r[h['備註']]),rawTime});
+    out.push({id,weekday,time,endTime:range.end,student,course:str(r[h['課程']]),teacher:str(r[h['老師']]),site:normalizeSite(r[h['校區']]),until:dateKey(r[h['有效迄日']]),template:str(r[h['通知模板']]),note:str(r[h['備註']]),rawTime});
   }
   // 診斷指定學生為何沒有進入「實際課程」。只記錄少禹相關資料，不改變既有排課結果。
   const diagnosticStudents=['陳少禹','少禹'];
@@ -672,7 +674,7 @@ function buildRows(fixed, adjusts, fromDate, days){
     if(seen.has(key))continue;
     seen.add(key);
     const courseId=x.adjustId?(x.fixedId||'ADJ')+'-'+x.date+'-'+x.adjustId:x.fixedId+'-'+x.date;
-    final.push([courseId,x.date,x.weekday,x.time,x.student,x.course,x.teacher,x.site,x.source,x.fixedId,x.adjustId,x.adjustResult,x.note||'']);
+    final.push([courseId,x.date,x.weekday,x.time,x.student,x.course,x.teacher,normalizeSite(x.site),x.source,x.fixedId,x.adjustId,x.adjustResult,x.note||'']);
   }
   return final;
 }
@@ -733,11 +735,12 @@ function mergeReminderItems(items){
   for(const item of items){
     // 老師：同一天＋同校區＋同一位老師，只發一則，內含所有時段。
     // 家長：維持同一時間合併，避免不同時間的課程混在同一則家長通知。
-    const key=item.role==='老師'
-      ? [item.role,compact(item.recipient),item.date,compact(item.teacher),compact(item.site)].join('|')
-      : [item.role,compact(item.recipient),item.date,item.time,compact(item.teacher),compact(item.site)].join('|');
+    const normalizedItem={...item,site:normalizeSite(item.site)};
+    const key=normalizedItem.role==='老師'
+      ? [normalizedItem.role,compact(normalizedItem.recipient),normalizedItem.date,compact(normalizedItem.teacher),compact(normalizedItem.site)].join('|')
+      : [normalizedItem.role,compact(normalizedItem.recipient),normalizedItem.date,normalizedItem.time,compact(normalizedItem.teacher),compact(normalizedItem.site)].join('|');
     if(!groups.has(key)) groups.set(key,[]);
-    groups.get(key).push(item);
+    groups.get(key).push(normalizedItem);
   }
 
   const merged=[];
@@ -1121,7 +1124,7 @@ async function syncSourceIntoSchedule(){
     set('學生',x.student);
     set('課程',x.course||'');
     set('老師',x.teacher);
-    set('校區',x.site||'');
+    set('校區',normalizeSite(x.site));
     set('有效迄日','');
     set('啟用','是');
     set('備註','來源：開學課表自動同步');
