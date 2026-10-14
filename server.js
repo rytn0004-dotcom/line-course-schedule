@@ -1050,8 +1050,119 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
   return {expectedCount:expected.length,created,updated,disabled,reminderServiceEnabled:settings.enabled==='是',lineSending:false};
 }
 
+
+function columnLetter(n){
+  let out='';
+  while(n>0){ const r=(n-1)%26; out=String.fromCharCode(65+r)+out; n=Math.floor((n-1)/26); }
+  return out;
+}
+
+// 每次手動呼叫 /build 時，先讀取「開學課表」並把尚未存在的固定課表／調課資料補入。
+// 安全原則：只新增來源中缺少的列，不刪除或覆寫現有列；既有人工資料保留。
+async function syncSourceIntoSchedule(){
+  const year=Number(todayKey().slice(0,4));
+  const [rawRows,fixedRows,adjustRows]=await readRawSourcePreview();
+  const parsed=parseRawSchedule(rawRows,year);
+  const fixedHeaderRow=findHeaderRow(fixedRows,['固定課表ID','星期','上課時間','學生','課程','老師','校區','有效迄日','啟用']);
+  if(fixedHeaderRow<0) throw new Error('來源同步停止：固定課表欄位不正確，沒有寫入任何資料。');
+  const fixedHeaders=(fixedRows[fixedHeaderRow]||[]).map(str);
+  const fh=hmap(fixedHeaders);
+  const existingFixedIds=new Set();
+  const existingFixedKeys=new Set();
+  for(let i=fixedHeaderRow+1;i<fixedRows.length;i++){
+    const r=fixedRows[i]||[];
+    const id=str(r[fh['固定課表ID']]);
+    if(!id) continue;
+    existingFixedIds.add(id);
+    existingFixedKeys.add(rawFixedLogicalKey({
+      weekday:str(r[fh['星期']]),
+      time:str(r[fh['上課時間']]),
+      student:str(r[fh['學生']]),
+      teacher:str(r[fh['老師']])
+    }));
+  }
+  const matchedFixed=matchRawFixedIds(parsed.fixed,fixedRows);
+  const fixedToAdd=matchedFixed.filter(x=>!existingFixedIds.has(x.id) && !existingFixedKeys.has(rawFixedLogicalKey(x)));
+  const fixedOutput=fixedToAdd.map(x=>{
+    const row=new Array(fixedHeaders.length).fill('');
+    const set=(name,value)=>{ if(fh[name]!==undefined) row[fh[name]]=value??''; };
+    set('固定課表ID',x.id);
+    set('星期',x.weekday);
+    set('上課時間',x.time+(x.endTime?'-'+x.endTime:''));
+    set('學生',x.student);
+    set('課程',x.course||'');
+    set('老師',x.teacher);
+    set('校區',x.site||'');
+    set('有效迄日','');
+    set('啟用','是');
+    // 例外日期／調課註記另寫入「調課課程」，避免同一備註被重複解析。
+    set('備註','來源：開學課表自動同步');
+    set('通知模板','家長一般/老師通知');
+    return row;
+  });
+  if(fixedOutput.length){
+    const start=fixedRows.length+1;
+    await retry('append source fixed schedule',()=>sheets.spreadsheets.values.update({
+      spreadsheetId:SHEET_ID,
+      range:qsheet('固定課表')+'!A'+start+':'+columnLetter(fixedHeaders.length)+(start+fixedOutput.length-1),
+      valueInputOption:'RAW',requestBody:{values:fixedOutput}
+    }));
+  }
+
+  const adjustHeaderRow=findHeaderRow(adjustRows,['調課ID','原固定課表ID','原日期','原時間','動作','新日期','新時間','學生','確認']);
+  if(adjustHeaderRow<0) throw new Error('來源同步停止：調課課程欄位不正確；固定課表新增 '+fixedOutput.length+' 列，但調課資料尚未同步。');
+  const adjustHeaders=(adjustRows[adjustHeaderRow]||[]).map(str);
+  const ah=hmap(adjustHeaders);
+  const existingAdjustIds=new Set();
+  for(let i=adjustHeaderRow+1;i<adjustRows.length;i++){
+    const id=str((adjustRows[i]||[])[ah['調課ID']]);
+    if(id) existingAdjustIds.add(id);
+  }
+  const fixedIdByKey=new Map(matchedFixed.map(x=>[rawFixedLogicalKey(x),x.id]));
+  const assignedAdjustments=assignPreviewAdjustmentIds(
+    parsed.adjustments.map(x=>({...x,fixedId:fixedIdByKey.get(rawFixedLogicalKey(x))||x.fixedId||''})),
+    adjustRows
+  );
+  const adjustToAdd=assignedAdjustments.filter(x=>x.id && !existingAdjustIds.has(x.id));
+  const adjustOutput=adjustToAdd.map(x=>{
+    const row=new Array(adjustHeaders.length).fill('');
+    const set=(name,value)=>{ if(ah[name]!==undefined) row[ah[name]]=value??''; };
+    set('調課ID',x.id);
+    set('原固定課表ID',x.fixedId||'');
+    set('原日期',x.originalDate||'');
+    set('原時間',x.originalTime||'');
+    set('動作',x.action||'');
+    set('新日期',x.newDate||'');
+    set('新時間',x.newTime||'');
+    set('學生',x.student||'');
+    set('新課程',x.course||'');
+    set('新老師',x.teacher||'');
+    set('新校區',x.site||'');
+    set('確認','是');
+    set('備註',x.note||'來源：開學課表自動解析');
+    return row;
+  });
+  if(adjustOutput.length){
+    const start=adjustRows.length+1;
+    await retry('append source adjustments',()=>sheets.spreadsheets.values.update({
+      spreadsheetId:SHEET_ID,
+      range:qsheet('調課課程')+'!A'+start+':'+columnLetter(adjustHeaders.length)+(start+adjustOutput.length-1),
+      valueInputOption:'RAW',requestBody:{values:adjustOutput}
+    }));
+  }
+  return {
+    sourceSheet:'開學課表',
+    sourceFixedParsed:parsed.fixed.length,
+    sourceAdjustmentsParsed:parsed.adjustments.length,
+    fixedAdded:fixedOutput.length,
+    adjustmentsAdded:adjustOutput.length,
+    existingRowsPreserved:true
+  };
+}
+
 async function build({fromDate=todayKey(),days=DEFAULT_DAYS}={}){
   if(!/^\d{4}-\d{2}-\d{2}$/.test(fromDate)) throw new Error('fromDate 必須是 YYYY-MM-DD');
+  const sourceSync=await syncSourceIntoSchedule();
   await ensureSheet('課程提醒');
   await ensureSheetHeaders('課程校正',CORRECTION_HEADERS);
   const [settingsRows,fixedRows,adjustRows,correctionRows,oldActualRows,contactRows,templateRows,reminderRows] = await readSheets();
@@ -1073,7 +1184,7 @@ async function build({fromDate=todayKey(),days=DEFAULT_DAYS}={}){
   const reminder=AUTO_CREATE_REMINDERS
     ? await syncReminders(actual,reminderRows,contacts,templates,settings,fromDate,days,fixedTemplateByIdInput)
     : {expectedCount:0,created:0,updated:0,disabled:0,reminderServiceEnabled:settings.enabled==='是',autoCreateReminders:false,lineSending:false};
-  return {ok:true,fromDate,toDate:addDays(fromDate,days-1),fixedCount:fixed.length,adjustCount:adjusts.length,actualCount:actual.length,reminder};
+  return {ok:true,fromDate,toDate:addDays(fromDate,days-1),sourceSync,fixedCount:fixed.length,adjustCount:adjusts.length,actualCount:actual.length,reminder};
 }
 
 let lastBuild={status:'not_run'};
@@ -1158,7 +1269,9 @@ function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
 }
 
 function rawFixedLogicalKey(x){
-  return [norm(x.weekday),timeKey(x.time),compact(x.student),compact(x.teacher)].join('|');
+  const rawTime=str(x.time);
+  const start=parseTimeRange(rawTime).start || timeKey(rawTime);
+  return [norm(x.weekday),start,compact(x.student),compact(x.teacher)].join('|');
 }
 
 function parseRawSchedule(rows, year = new Date().getFullYear()){
