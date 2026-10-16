@@ -1478,9 +1478,11 @@ function parseRawPurpleCourse(item, year = new Date().getFullYear()){
   }
   if(!newDate) return [];
   const extensionNote=isPossibleExtension?'；[可能延長30分鐘，待確認；不變更原定時間]':'';
+  const studentName=isKnownSubstitute ? str(item.student).replace(/英文$/,'') : item.student;
+  const courseName=isKnownSubstitute ? '英文' : item.course;
   return [{
     id:'',fixedId:'',weekday:item.weekday,originalDate:'',originalTime:'',
-    action,newDate,newTime,student:item.student,course:item.course,
+    action,newDate,newTime,student:studentName,course:courseName,
     teacher:item.teacher,site:item.site,
     note:'[紫色調課] '+originNote+'單次課程：'+(item.raw||item.student)+'；備註：'+(annotationText||'無')+'；字色 '+(item.colorHex||'未知')+extensionNote,
     source:'開學課表',colorStatus:'purple',colorHex:item.colorHex||''
