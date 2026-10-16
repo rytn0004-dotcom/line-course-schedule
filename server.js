@@ -665,7 +665,7 @@ function buildRows(fixed, adjusts, fromDate, days){
   for(const a of adjusts){
     if(!a.newDate||a.originalDate||/取消|停課/.test(a.action))continue;
     if(a.newDate<fromDate||a.newDate>toDate)continue;
-    const fb=fixed.find(x=>x.id===a.fixedId),isAdd=/新增|補課|體驗/.test(a.action)||!a.fixedId;
+    const fb=fixed.find(x=>x.id===a.fixedId),isAdd=/新增|補課|體驗|代課/.test(a.action)||!a.fixedId;
     if(!isAdd||!a.newTime)continue;
     const student=a.student||fb?.student||''; if(!student)continue;
     out.push({date:a.newDate,weekday:weekdayLabel(a.newDate),time:a.newTime,student,course:a.course||fb?.course||'',teacher:a.teacher||fb?.teacher||'',site:a.site||fb?.site||'',source:a.source||'調課課程',fixedId:fb?.id||'',adjustId:a.id||'NEW-'+a.newDate+'-'+compact(student),adjustResult:'新增調課',note:a.note||'',template:fb?.template||''});
