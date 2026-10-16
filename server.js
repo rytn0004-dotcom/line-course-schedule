@@ -1302,19 +1302,22 @@ function rawCellText(cell){
 
 function rawFormatColor(format, themeColors = {}){
   if(!format || typeof format !== 'object') return null;
-  const direct=format.foregroundColor;
   const style=format.foregroundColorStyle;
-  const rgb=(direct && typeof direct === 'object') ? direct : (style && style.rgbColor && typeof style.rgbColor === 'object' ? style.rgbColor : null);
-  if(rgb && ['red','green','blue'].some(k=>typeof rgb[k]==='number')){
+  const direct=format.foregroundColor;
+  const toRgb=rgb=>{
+    if(!rgb || typeof rgb !== 'object' || !['red','green','blue'].some(k=>typeof rgb[k]==='number')) return null;
     const cv=v=>{
       const n=Number(v||0);
       return Math.max(0,Math.min(255,Math.round(n<=1?n*255:n)));
     };
-    return {rgb:[cv(rgb.red),cv(rgb.green),cv(rgb.blue)],source:'rgb'};
-  }
+    return [cv(rgb.red),cv(rgb.green),cv(rgb.blue)];
+  };
+  // Per Google Sheets API, foregroundColorStyle takes precedence over the deprecated foregroundColor.
+  const styleRgb=toRgb(style && style.rgbColor);
+  if(styleRgb) return {rgb:styleRgb,source:'rgb-style'};
   const theme=style && style.themeColor ? String(style.themeColor).toUpperCase() : '';
-  if(theme && themeColors[theme]) return {rgb:themeColors[theme],source:'theme:'+theme};
   const defaultTheme={
+    TEXT:[0,0,0], BACKGROUND:[255,255,255],
     TEXT1:[0,0,0], DARK1:[0,0,0],
     BACKGROUND1:[255,255,255], LIGHT1:[255,255,255],
     TEXT2:[89,89,89], DARK2:[31,78,121],
@@ -1322,10 +1325,13 @@ function rawFormatColor(format, themeColors = {}){
     ACCENT1:[79,129,189], ACCENT2:[192,80,77],
     ACCENT3:[155,187,89], ACCENT4:[128,100,162],
     ACCENT5:[75,172,198], ACCENT6:[247,150,70],
-    LINK:[0,0,255]
+    LINK:[0,0,255], HYPERLINK:[0,0,255], FOLLOWED_LINK:[128,0,128]
   };
+  if(theme && themeColors[theme]) return {rgb:themeColors[theme],source:'theme:'+theme};
   if(theme && defaultTheme[theme]) return {rgb:defaultTheme[theme],source:'theme:'+theme};
   if(theme) return {rgb:null,source:'theme:'+theme};
+  const directRgb=toRgb(direct);
+  if(directRgb) return {rgb:directRgb,source:'rgb-legacy'};
   return null;
 }
 
@@ -1450,23 +1456,23 @@ function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
     if(sameDayMatch){
       const d=parseDateFlexible(sameDayMatch[1]+'/'+sameDayMatch[2],year);
       const newStart=timeKey(sameDayMatch[3]), newEnd=timeKey(sameDayMatch[4]);
-      if(d && newStart && newEnd) out.push({id:'',fixedId:'',originalDate:d,originalTime:item.time,action:'改時間',newDate:d,newTime:newStart,student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note+'（調整後時段 '+newStart+'-'+newEnd+'）',source:'開學課表'});
+      if(d && newStart && newEnd) out.push({id:'',fixedId:'',weekday:item.weekday,colorStatus:item.colorStatus,colorHex:item.colorHex,originalDate:d,originalTime:item.time,action:'改時間',newDate:d,newTime:newStart,student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note+'（調整後時段 '+newStart+'-'+newEnd+'）',source:'開學課表'});
     }
     const moveRe=/(\d{1,2})\/(\d{1,2})[^()]*?調\s*(\d{1,2})\/(\d{1,2})/g;
     while((m=moveRe.exec(text))){
       const from=parseDateFlexible(m[1]+'/'+m[2],year);
       const to=parseDateFlexible(m[3]+'/'+m[4],year);
-      if(from && to) out.push({id:'',fixedId:'',originalDate:from,originalTime:item.time,action:'調課',newDate:to,newTime:item.time,student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note,source:'開學課表'});
+      if(from && to) out.push({id:'',fixedId:'',weekday:item.weekday,colorStatus:item.colorStatus,colorHex:item.colorHex,originalDate:from,originalTime:item.time,action:'調課',newDate:to,newTime:item.time,student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note,source:'開學課表'});
     }
     const leaveRe=/(\d{1,2})\/(\d{1,2})[^0-9]*(?:請假|p(?:調|$))/gi;
     while((m=leaveRe.exec(text))){
       const d=parseDateFlexible(m[1]+'/'+m[2],year);
-      if(d && !/調/.test(text)) out.push({id:'',fixedId:'',originalDate:d,originalTime:item.time,action:'請假',newDate:d,newTime:item.time,student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note,source:'開學課表'});
+      if(d && !/調/.test(text)) out.push({id:'',fixedId:'',weekday:item.weekday,colorStatus:item.colorStatus,colorHex:item.colorHex,originalDate:d,originalTime:item.time,action:'請假',newDate:d,newTime:item.time,student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note,source:'開學課表'});
     }
     const addRe=/(\d{1,2})\/(\d{1,2})[^0-9]*?(?:補課|加課)/g;
     while((m=addRe.exec(text))){
       const d=parseDateFlexible(m[1]+'/'+m[2],year);
-      if(d) out.push({id:'',fixedId:'',originalDate:'',originalTime:'',action:'補課',newDate:d,newTime:item.time,student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note,source:'開學課表'});
+      if(d) out.push({id:'',fixedId:'',weekday:item.weekday,colorStatus:item.colorStatus,colorHex:item.colorHex,originalDate:'',originalTime:'',action:'補課',newDate:d,newTime:item.time,student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note,source:'開學課表'});
     }
   }
   return out;
@@ -1611,7 +1617,7 @@ async function readRawSourcePreview(){
   const [sourceResponse,otherResponse]=await Promise.all([sourcePromise,otherPromise]);
   const sourceSheet=(sourceResponse.data.sheets||[]).find(x=>str(x.properties && x.properties.title)==='開學課表');
   if(!sourceSheet) throw new Error('Google 試算表找不到「開學課表」分頁。');
-  const themeColors=readThemeColors(sourceResponse.data.spreadsheetTheme);
+  const themeColors=readThemeColors(sourceResponse.data.properties && sourceResponse.data.properties.spreadsheetTheme);
   const rawRows=gridRowsForPreview(sourceSheet);
   const otherRows=(otherResponse.data.valueRanges||[]).map(v=>v.values||[]);
   return {rawRows,fixedRows:otherRows[0]||[],adjustRows:otherRows[1]||[],themeColors};
