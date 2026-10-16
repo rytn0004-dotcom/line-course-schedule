@@ -1295,19 +1295,101 @@ function isUnavailableSlot(value){
   const cleaned=str(value).replace(/[\s　]/g,'').replace(/^\d{1,2}:?\d{2}/,'').replace(/^[：:、，,]+/,'');
   return /^(?:無法排課|時段不能排課|不能排課|不可排課|無法安排|休息時段)$/i.test(cleaned);
 }
-function parseRawCourseCell(cell, teacher, weekday, year = new Date().getFullYear()){
-  const lines=str(cell).split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+function rawCellText(cell){
+  if(cell && typeof cell === 'object' && !Array.isArray(cell) && Object.prototype.hasOwnProperty.call(cell,'value')) return str(cell.value);
+  return str(cell);
+}
+
+function rawFormatColor(format, themeColors = {}){
+  if(!format || typeof format !== 'object') return null;
+  const direct=format.foregroundColor;
+  const style=format.foregroundColorStyle;
+  const rgb=(direct && typeof direct === 'object') ? direct : (style && style.rgbColor && typeof style.rgbColor === 'object' ? style.rgbColor : null);
+  if(rgb && ['red','green','blue'].some(k=>typeof rgb[k]==='number')){
+    const cv=v=>{
+      const n=Number(v||0);
+      return Math.max(0,Math.min(255,Math.round(n<=1?n*255:n)));
+    };
+    return {rgb:[cv(rgb.red),cv(rgb.green),cv(rgb.blue)],source:'rgb'};
+  }
+  const theme=style && style.themeColor ? String(style.themeColor).toUpperCase() : '';
+  if(theme && themeColors[theme]) return {rgb:themeColors[theme],source:'theme:'+theme};
+  const defaultTheme={
+    TEXT1:[0,0,0], DARK1:[0,0,0],
+    BACKGROUND1:[255,255,255], LIGHT1:[255,255,255],
+    TEXT2:[89,89,89], DARK2:[31,78,121],
+    BACKGROUND2:[238,236,225], LIGHT2:[238,236,225],
+    ACCENT1:[79,129,189], ACCENT2:[192,80,77],
+    ACCENT3:[155,187,89], ACCENT4:[128,100,162],
+    ACCENT5:[75,172,198], ACCENT6:[247,150,70],
+    LINK:[0,0,255]
+  };
+  if(theme && defaultTheme[theme]) return {rgb:defaultTheme[theme],source:'theme:'+theme};
+  if(theme) return {rgb:null,source:'theme:'+theme};
+  return null;
+}
+
+function rawFontColorAt(cell, charIndex, themeColors = {}){
+  const runs=Array.isArray(cell && cell.textFormatRuns) ? cell.textFormatRuns : [];
+  let selected=null, selectedStart=-1;
+  for(const run of runs){
+    const start=Number(run && run.startIndex || 0);
+    if(start<=charIndex && start>=selectedStart){
+      selected=run && run.format ? run.format : null;
+      selectedStart=start;
+    }
+  }
+  const runColor=rawFormatColor(selected,themeColors);
+  if(runColor && runColor.rgb) return runColor;
+  if(runColor && runColor.source && runColor.source.startsWith('theme:')) return runColor;
+  const cellFormat=(cell && cell.effectiveFormat && cell.effectiveFormat.textFormat) ||
+    (cell && cell.userEnteredFormat && cell.userEnteredFormat.textFormat) || null;
+  const cellColor=rawFormatColor(cellFormat,themeColors);
+  if(cellColor && cellColor.rgb) return cellColor;
+  if(runColor) return runColor;
+  if(cellColor) return cellColor;
+  // Sheets' default text color is black if no cell/run font color is explicitly set.
+  return {rgb:[0,0,0],source:'default-black'};
+}
+
+function classifyRawFontColor(cell, charIndex, themeColors = {}){
+  const detected=rawFontColorAt(cell,charIndex,themeColors);
+  const rgb=detected.rgb;
+  if(!rgb) return {status:'unknown',hex:'',colorSource:detected.source};
+  const r=rgb[0],g=rgb[1],b=rgb[2];
+  const hex='#'+rgb.map(v=>v.toString(16).padStart(2,'0')).join('').toUpperCase();
+  let status='unknown';
+  if(Math.max(r,g,b)<=90){
+    status='black';
+  } else if(r>=140 && g<=120 && b<=120 && r-g>=45 && r-b>=45){
+    status='red';
+  } else if(r>=145 && g>=125 && b<=190 && r-b>=30 && g-b>=25){
+    status='yellow';
+  } else if(r>=75 && b>=75 && r-g>=25 && b-g>=25){
+    status='purple';
+  }
+  return {status,hex,colorSource:detected.source};
+}
+
+function parseRawCourseCell(cell, teacher, weekday, year = new Date().getFullYear(), themeColors = {}){
+  const rawText=rawCellText(cell);
+  const lines=[...rawText.matchAll(/[^\r\n]+/g)];
   const out=[];
-  for(const line of lines){
+  for(const match of lines){
+    const originalLine=match[0];
+    const line=originalLine.trim();
+    if(!line) continue;
+    const leading=originalLine.length-originalLine.trimStart().length;
+    const lineStart=match.index+leading;
     const tm=line.match(/^(\d{1,2}:?\d{2})\s*[-~～至]\s*(\d{1,2}:?\d{2})\s*(.*)$/);
     if(!tm) continue;
     const start=timeKey(tm[1]), end=timeKey(tm[2]);
     let rest=str(tm[3]);
     if(!start || !end || !rest) continue;
+    const colorCharOffset=line.indexOf(tm[3]);
+    const colorInfo=classifyRawFontColor(cell,lineStart+Math.max(0,colorCharOffset),themeColors);
     const annotations=[];
-    // 不可排課時段是空檔，不是課程；不可建立成固定課表。
     if(isUnavailableSlot(rest)) continue;
-    // 團班括號有時是學生名單；只有在團班名稱後、且不含日期／調課關鍵字時才保留。
     rest=rest.replace(/[（(]([^）)]*)[）)]/g,(whole,x,offset)=>{
       const before=rest.slice(0,offset);
       const groupRoster=/團班\s*$/.test(before) &&
@@ -1317,7 +1399,6 @@ function parseRawCourseCell(cell, teacher, weekday, year = new Date().getFullYea
       annotations.push(str(x));
       return '';
     }).trim();
-    // 有些註記缺少右括號，前面的配對括號處理不到；擷取並移除尾端註記。
     const tail=rest.match(/[（(]([^）)]*(?:\d{1,2}\/\d{1,2}|調課|調|請假|加時|加課|補課|改課|代課|停課|僅|\bp\b|\bb\b)[^）)]*)$/i);
     if(tail){
       annotations.push(str(tail[1]));
@@ -1325,9 +1406,35 @@ function parseRawCourseCell(cell, teacher, weekday, year = new Date().getFullYea
     }
     const student=rest.replace(/\s+/g,' ').trim();
     if(!student || isUnavailableSlot(student)) continue;
-    out.push({teacher,weekday,time:start,endTime:end,student,course:'',site:'',annotations,raw:line});
+    out.push({
+      teacher,weekday,time:start,endTime:end,student,course:'',site:'',
+      annotations,raw:line,colorStatus:colorInfo.status,colorHex:colorInfo.hex,
+      colorSource:colorInfo.colorSource,
+      note:colorInfo.status==='yellow'?'[黃色確認中]':''
+    });
   }
   return out;
+}
+
+function parseRawPurpleCourse(item, year = new Date().getFullYear()){
+  const parsed=parseRawAdjustmentAnnotations(item,year);
+  const usable=parsed.filter(x=>/^(調課|改時間|補課|加課)$/.test(str(x.action)));
+  if(usable.length){
+    return usable.map(x=>({...x,note:'[紫色調課] '+str(x.note),colorStatus:'purple',colorHex:item.colorHex||''}));
+  }
+  const annotationText=(item.annotations||[]).join('；');
+  const onlyDate=annotationText.match(/僅\s*(\d{1,2})\/(\d{1,2})/);
+  if(onlyDate){
+    const d=parseDateFlexible(onlyDate[1]+'/'+onlyDate[2],year);
+    if(d) return [{
+      id:'',fixedId:'',originalDate:'',originalTime:'',action:'加課',
+      newDate:d,newTime:item.time,student:item.student,course:item.course,
+      teacher:item.teacher,site:item.site,
+      note:'[紫色調課] 單次課程：'+annotationText+'；字色 '+(item.colorHex||'未知'),
+      source:'開學課表',colorStatus:'purple',colorHex:item.colorHex||''
+    }];
+  }
+  return [];
 }
 
 function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
@@ -1371,33 +1478,43 @@ function rawFixedLogicalKey(x){
   return [norm(x.weekday),start,compact(stripScheduleAnnotation(x.student)),compact(stripScheduleAnnotation(x.teacher))].join('|');
 }
 
-function parseRawSchedule(rows, year = new Date().getFullYear()){
+function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {}){
   if(!rows.length) throw new Error('找不到「開學課表」資料。');
   const header=rows[0]||[];
-  const teacherCol=header.findIndex(x=>/^\s*老師\s*$/.test(str(x)));
+  const teacherAliases=new Set(['老師','授課老師','班別負責老師','負責老師']);
+  const teacherCol=header.findIndex(x=>teacherAliases.has(normHeader(rawCellText(x))));
   const weekdayCols={};
-  const weekdayNames={ '1':'一','2':'二','3':'三','4':'四','5':'五','6':'六','7':'日' };
+  const weekdayMap={'1':'一','2':'二','3':'三','4':'四','5':'五','6':'六','7':'日','一':'一','二':'二','三':'三','四':'四','五':'五','六':'六','日':'日'};
   for(let i=0;i<header.length;i++){
-    const label=str(header[i]).replace(/\s+/g,'');
-    const m=label.match(/^星期([一二三四五六日1-7])$/);
-    if(m) weekdayCols[i]=weekdayNames[m[1]]||m[1];
+    const m=rawCellText(header[i]).replace(/\s+/g,'').match(/^星期([一二三四五六日1-7])$/);
+    if(m) weekdayCols[i]=weekdayMap[m[1]];
   }
-  if(teacherCol<0 || !Object.keys(weekdayCols).length) throw new Error('「開學課表」格式不符合目前預期：需要「老師」及星期欄位。');
-  const fixed=[], adjustments=[];
+  if(teacherCol<0 || !Object.keys(weekdayCols).length){
+    const seenHeader=header.map(rawCellText).filter(Boolean).join('、');
+    throw new Error('「開學課表」格式不符合目前預期：需要老師欄及星期欄位；目前讀到：'+(seenHeader||'空白標題列'));
+  }
+  const fixed=[], adjustments=[], redItems=[], unclassifiedItems=[];
   for(let r=1;r<rows.length;r++){
-    const row=rows[r]||[];
-    // 老師欄可能同時放可排課時間等備註；只用第一行作為老師姓名，並去掉姓名後的括號註記。
-    const teacherCell=str(row[teacherCol]);
-    const teacher=stripScheduleAnnotation((teacherCell.split(/\r?\n/)[0]||'').replace(/[（(][^）)]*[）)]/g,(whole,x,offset,before)=>/(?:團班|班別)/.test(before||'') && !/[0-9]/.test(x) ? whole : ''));
+    const row=rows[r]||[], teacher=rawCellText(row[teacherCol]);
     if(!teacher) continue;
     for(const [col,weekday] of Object.entries(weekdayCols)){
-      for(const item of parseRawCourseCell(row[Number(col)],teacher,weekday,year)){
-        fixed.push(item);
-        adjustments.push(...parseRawAdjustmentAnnotations(item,year));
+      for(const item of parseRawCourseCell(row[Number(col)],teacher,weekday,year,themeColors)){
+        if(item.colorStatus==='black' || item.colorStatus==='yellow'){
+          fixed.push(item);
+          adjustments.push(...parseRawAdjustmentAnnotations(item,year));
+        } else if(item.colorStatus==='purple'){
+          const oneTime=parseRawPurpleCourse(item,year);
+          if(oneTime.length) adjustments.push(...oneTime);
+          else unclassifiedItems.push({...item,note:'[紫色課程待確認] 無法從備註判定單次上課日期或原／新日期'});
+        } else if(item.colorStatus==='red'){
+          redItems.push({...item,note:'[紅色自爆] 已終止／停課取消；不列入固定課表'});
+        } else {
+          unclassifiedItems.push({...item,note:'[顏色無法判定] 未自動歸類，避免誤入固定課表'});
+        }
       }
     }
   }
-  return {fixed,adjustments};
+  return {fixed,adjustments,redItems,unclassifiedItems};
 }
 
 function matchRawFixedIds(rawFixed, existingFixedRows){
@@ -1447,25 +1564,86 @@ function assignPreviewAdjustmentIds(adjustments, existingAdjustRows){
   });
 }
 
+function gridCellForPreview(cell){
+  const source=cell||{};
+  let value='';
+  if(source.formattedValue!==undefined) value=source.formattedValue;
+  else if(source.userEnteredValue && source.userEnteredValue.stringValue!==undefined) value=source.userEnteredValue.stringValue;
+  else if(source.userEnteredValue && source.userEnteredValue.numberValue!==undefined) value=String(source.userEnteredValue.numberValue);
+  else if(source.userEnteredValue && source.userEnteredValue.boolValue!==undefined) value=String(source.userEnteredValue.boolValue);
+  return {...source,value};
+}
+
+function gridRowsForPreview(sheet){
+  const data=(sheet && sheet.data)||[];
+  const out=[];
+  for(const grid of data){
+    for(const row of (grid.rowData||[])){
+      out.push((row.values||[]).map(gridCellForPreview));
+    }
+  }
+  return out;
+}
+
+function readThemeColors(theme){
+  const out={};
+  for(const pair of (theme && theme.themeColors)||[]){
+    const key=str(pair.colorType).toUpperCase();
+    const rgb=pair.color && pair.color.rgbColor;
+    if(!key || !rgb) continue;
+    const cv=v=>Math.max(0,Math.min(255,Math.round(Number(v||0)*255)));
+    out[key]=[cv(rgb.red),cv(rgb.green),cv(rgb.blue)];
+  }
+  return out;
+}
+
 async function readRawSourcePreview(){
-  const ranges=[
-    qsheet('開學課表')+'!A:Z',
-    qsheet('固定課表')+'!A:K',
-    qsheet('調課課程')+'!A:M'
-  ];
-  const r=await retry('read raw 開學課表 preview',()=>sheets.spreadsheets.values.batchGet({spreadsheetId:SHEET_ID,ranges,majorDimension:'ROWS'}));
-  return (r.data.valueRanges||[]).map(v=>v.values||[]);
+  const sourcePromise=retry('read raw 開學課表 with font colors',()=>sheets.spreadsheets.get({
+    spreadsheetId:SHEET_ID,
+    ranges:[qsheet('開學課表')+'!A:Z'],
+    includeGridData:true
+  }));
+  const otherPromise=retry('read raw fixed and adjustment preview',()=>sheets.spreadsheets.values.batchGet({
+    spreadsheetId:SHEET_ID,
+    ranges:[qsheet('固定課表')+'!A:K',qsheet('調課課程')+'!A:M'],
+    majorDimension:'ROWS'
+  }));
+  const [sourceResponse,otherResponse]=await Promise.all([sourcePromise,otherPromise]);
+  const sourceSheet=(sourceResponse.data.sheets||[]).find(x=>str(x.properties && x.properties.title)==='開學課表');
+  if(!sourceSheet) throw new Error('Google 試算表找不到「開學課表」分頁。');
+  const themeColors=readThemeColors(sourceResponse.data.spreadsheetTheme);
+  const rawRows=gridRowsForPreview(sourceSheet);
+  const otherRows=(otherResponse.data.valueRanges||[]).map(v=>v.values||[]);
+  return {rawRows,fixedRows:otherRows[0]||[],adjustRows:otherRows[1]||[],themeColors};
 }
 
 app.get('/preview-source',async(req,res)=>{
   try{
     const year=Number(req.query.year||new Date().getFullYear());
-    const [rawRows,fixedRows,adjustRows]=await readRawSourcePreview();
-    const parsed=parseRawSchedule(rawRows,year);
+    const {rawRows,fixedRows,adjustRows,themeColors}=await readRawSourcePreview();
+    const parsed=parseRawSchedule(rawRows,year,themeColors);
     const fixed=matchRawFixedIds(parsed.fixed,fixedRows);
     const fixedIdByKey=new Map(fixed.map(x=>[rawFixedLogicalKey(x),x.id]));
-    const adjustments=assignPreviewAdjustmentIds(parsed.adjustments.map(x=>({...x,fixedId:fixedIdByKey.get(rawFixedLogicalKey(x))||''})),adjustRows);
-    res.json({ok:true,mode:'preview-only',sourceSheet:'開學課表',writesPerformed:false,fixedCount:fixed.length,adjustmentCount:adjustments.length,fixed:fixed.slice(0,200),adjustments:adjustments.slice(0,200)});
+    const adjustments=assignPreviewAdjustmentIds(parsed.adjustments.map(x=>({
+      ...x,
+      fixedId:x.fixedId||fixedIdByKey.get(rawFixedLogicalKey(x))||''
+    })),adjustRows);
+    const colorSummary={
+      blackFixed:fixed.filter(x=>x.colorStatus==='black').length,
+      yellowPending:fixed.filter(x=>x.colorStatus==='yellow').length,
+      purpleAdjustments:adjustments.filter(x=>x.colorStatus==='purple').length,
+      redCancelled:parsed.redItems.length,
+      unclassified:parsed.unclassifiedItems.length
+    };
+    res.json({
+      ok:true,mode:'preview-only',sourceSheet:'開學課表',writesPerformed:false,
+      colorRulesApplied:true,year,colorSummary,
+      fixedCount:fixed.length,adjustmentCount:adjustments.length,
+      redCount:parsed.redItems.length,unclassifiedCount:parsed.unclassifiedItems.length,
+      fixed:fixed.slice(0,300),adjustments:adjustments.slice(0,300),
+      redItems:parsed.redItems.slice(0,200),
+      unclassifiedItems:parsed.unclassifiedItems.slice(0,200)
+    });
   }catch(e){
     console.error('Source preview failed',e);
     res.status(500).json({ok:false,mode:'preview-only',writesPerformed:false,error:e.message});
