@@ -11,7 +11,7 @@ const TZ = process.env.TIMEZONE || 'Asia/Taipei';
 const RETRIES = Number(process.env.GOOGLE_API_MAX_RETRIES || 4);
 const PORT = Number(process.env.PORT || 10000);
 const DEFAULT_DAYS = Math.max(1, Number(process.env.SCHEDULE_BUILD_DAYS || 30));
-const SOURCE_PREVIEW_ONLY = ['1','true','yes','是','啟用'].includes(normValue(process.env.SCHEDULE_PREVIEW_ONLY || ''));
+const SOURCE_PREVIEW_ONLY = true; // This branch is permanently read-only; never allow build writes here.
 const PREVIEW_SOURCE_SHEET_ID = String(process.env.PREVIEW_SOURCE_SHEET_ID || SHEET_ID).trim();
 const PREVIEW_SOURCE_GID = String(process.env.PREVIEW_SOURCE_GID || '').trim();
 const PREVIEW_SOURCE_TAB_NAME = String(process.env.PREVIEW_SOURCE_TAB_NAME || '開學課表').trim();
@@ -1095,8 +1095,8 @@ async function syncSourceIntoSchedule(){
     return {sourceSheet:'開學課表',translationEnabled:false,sourceFixedParsed:0,sourceAdjustmentsParsed:0,fixedAdded:0,fixedCorrected:0,adjustmentsAdded:0,existingRowsPreserved:true,skipped:true};
   }
   const year=Number(todayKey().slice(0,4));
-  const [rawRows,fixedRows,adjustRows]=await readRawSourcePreview();
-  const parsed=parseRawSchedule(rawRows,year);
+  const {rawRows,fixedRows,adjustRows,themeColors}=await readRawSourcePreview();
+  const parsed=parseRawSchedule(rawRows,year,themeColors);
   const fixedHeaderRow=findHeaderRow(fixedRows,['固定課表ID','星期','上課時間','學生','課程','老師','校區','有效迄日','啟用']);
   if(fixedHeaderRow<0) throw new Error('來源同步停止：固定課表欄位不正確，沒有寫入任何資料。');
   const fixedHeaders=(fixedRows[fixedHeaderRow]||[]).map(str);
