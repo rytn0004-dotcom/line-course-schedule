@@ -1130,7 +1130,7 @@ async function syncSourceIntoSchedule(){
     set('校區',normalizeSite(x.site));
     set('有效迄日','');
     set('啟用','是');
-    set('備註','來源：開學課表自動同步');
+    set('備註','來源：開學課表自動同步'+(x.note?'；'+x.note:''));
     set('通知模板','家長一般/老師通知');
     return row;
   };
