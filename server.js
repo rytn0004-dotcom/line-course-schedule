@@ -1282,7 +1282,14 @@ async function buildOnce(options){
 
 app.get('/build',async(req,res)=>{
   if(SOURCE_PREVIEW_ONLY){
-    return res.status(403).json({ok:false,mode:'preview-only',writesPerformed:false,error:'只讀預覽模式已停用 /build，沒有寫入任何資料。'});
+    try{
+      // The build URL acts as a safe preview in this branch; it never runs build().
+      const preview=await buildSourcePreview(Number(req.query.year||new Date().getFullYear()));
+      return res.json({...preview,requestedEndpoint:'/build',note:'此分支為只讀模式；/build 已轉為來源預覽，沒有執行課表重建。'});
+    }catch(e){
+      console.error('Read-only build preview failed',e);
+      return res.status(500).json({ok:false,mode:'preview-only',writesPerformed:false,error:e.message});
+    }
   }
   try{
     const fromDate=req.query.from || todayKey();
@@ -1680,39 +1687,44 @@ async function readRawSourcePreview(){
 }
 
 
+async function buildSourcePreview(year = new Date().getFullYear()){
+  const {rawRows,fixedRows,adjustRows,themeColors,sourceSheetId,sourceSheetTitle,sourceSpreadsheetId}=await readRawSourcePreview();
+  const parsed=parseRawSchedule(rawRows,year,themeColors);
+  const fixed=matchRawFixedIds(parsed.fixed,fixedRows);
+  const fixedIdByKey=new Map(fixed.map(x=>[rawFixedLogicalKey(x),x.id]));
+  const adjustments=assignPreviewAdjustmentIds(parsed.adjustments.map(x=>({
+    ...x,
+    fixedId:x.fixedId||fixedIdByKey.get(rawFixedLogicalKey(x))||''
+  })),adjustRows);
+  const colorSummary={
+    blackFixed:fixed.filter(x=>x.colorStatus==='black').length,
+    yellowPending:fixed.filter(x=>x.colorStatus==='yellow').length,
+    purpleAdjustments:adjustments.filter(x=>x.colorStatus==='purple').length,
+    redCancelled:parsed.redItems.length,
+    unclassified:parsed.unclassifiedItems.length
+  };
+  return {
+    ok:true,mode:'preview-only',sourceSheetId,sourceSheetTitle,
+    sourceSpreadsheetId,
+    writesPerformed:false,colorRulesApplied:true,year,colorSummary,
+    fixedCount:fixed.length,adjustmentCount:adjustments.length,
+    redCount:parsed.redItems.length,unclassifiedCount:parsed.unclassifiedItems.length,
+    fixed:fixed.slice(0,300),adjustments:adjustments.slice(0,300),
+    redItems:parsed.redItems.slice(0,200),
+    unclassifiedItems:parsed.unclassifiedItems.slice(0,200)
+  };
+}
+
 app.get('/preview-source',async(req,res)=>{
   try{
     const year=Number(req.query.year||new Date().getFullYear());
-    const {rawRows,fixedRows,adjustRows,themeColors,sourceSheetId,sourceSheetTitle,sourceSpreadsheetId}=await readRawSourcePreview();
-    const parsed=parseRawSchedule(rawRows,year,themeColors);
-    const fixed=matchRawFixedIds(parsed.fixed,fixedRows);
-    const fixedIdByKey=new Map(fixed.map(x=>[rawFixedLogicalKey(x),x.id]));
-    const adjustments=assignPreviewAdjustmentIds(parsed.adjustments.map(x=>({
-      ...x,
-      fixedId:x.fixedId||fixedIdByKey.get(rawFixedLogicalKey(x))||''
-    })),adjustRows);
-    const colorSummary={
-      blackFixed:fixed.filter(x=>x.colorStatus==='black').length,
-      yellowPending:fixed.filter(x=>x.colorStatus==='yellow').length,
-      purpleAdjustments:adjustments.filter(x=>x.colorStatus==='purple').length,
-      redCancelled:parsed.redItems.length,
-      unclassified:parsed.unclassifiedItems.length
-    };
-    res.json({
-      ok:true,mode:'preview-only',sourceSheetId,sourceSheetTitle,
-      sourceSpreadsheetId,
-      writesPerformed:false,colorRulesApplied:true,year,colorSummary,
-      fixedCount:fixed.length,adjustmentCount:adjustments.length,
-      redCount:parsed.redItems.length,unclassifiedCount:parsed.unclassifiedItems.length,
-      fixed:fixed.slice(0,300),adjustments:adjustments.slice(0,300),
-      redItems:parsed.redItems.slice(0,200),
-      unclassifiedItems:parsed.unclassifiedItems.slice(0,200)
-    });
+    res.json(await buildSourcePreview(year));
   }catch(e){
     console.error('Source preview failed',e);
     res.status(500).json({ok:false,mode:'preview-only',writesPerformed:false,error:e.message});
   }
 });
+
 
 
 app.listen(PORT,()=>console.log(`LINE Course Schedule Manager v1.2 listening on ${PORT}`));
