@@ -1423,24 +1423,47 @@ function parseRawCourseCell(cell, teacher, weekday, year = new Date().getFullYea
 }
 
 function parseRawPurpleCourse(item, year = new Date().getFullYear()){
-  const parsed=parseRawAdjustmentAnnotations(item,year);
-  const usable=parsed.filter(x=>/^(調課|改時間|補課|加課)$/.test(str(x.action)));
-  if(usable.length){
-    return usable.map(x=>({...x,note:'[紫色調課] '+str(x.note),colorStatus:'purple',colorHex:item.colorHex||''}));
+  const annotations=(item.annotations||[]).map(str);
+  const annotationText=annotations.join('；');
+  let newDate='', newTime=item.time, action='補課', originNote='';
+
+  // 紫字的定義是「單次課程」，因此目的日期／時段應建立成獨立課程；
+  // 不把它當作固定課程的移動指令，避免因找不到原時段而漏建。
+  // 範例：9/7p調10/9b -> 單次建立在 10/9，課堂時段使用紫字主行。
+  const moveRe=/(?:^|[^0-9])(\d{1,2})\/(\d{1,2})[^()]*?調\s*(\d{1,2})\/(\d{1,2})/;
+  const moveMatch=annotationText.replace(/\s+/g,'').match(moveRe);
+  if(moveMatch){
+    const from=parseDateFlexible(moveMatch[1]+'/'+moveMatch[2],year);
+    newDate=parseDateFlexible(moveMatch[3]+'/'+moveMatch[4],year);
+    if(from) originNote='來源日期 '+from+'；';
+    action='補課';
+  } else {
+    const timeMatch=annotationText.match(/(\d{1,2})\/(\d{1,2})\s+(\d{1,2}:?\d{2})\s*[-~～至]\s*(\d{1,2}:?\d{2})/);
+    if(timeMatch){
+      newDate=parseDateFlexible(timeMatch[1]+'/'+timeMatch[2],year);
+      newTime=timeKey(timeMatch[3])||item.time;
+      action='補課';
+    } else {
+      const onlyDate=annotationText.match(/僅\s*(\d{1,2})\/(\d{1,2})/);
+      const addDate=annotationText.match(/(\d{1,2})\/(\d{1,2})[^()（）]*?(?:補課|加課)/);
+      if(onlyDate){
+        newDate=parseDateFlexible(onlyDate[1]+'/'+onlyDate[2],year);
+        action='補課';
+      } else if(addDate){
+        newDate=parseDateFlexible(addDate[1]+'/'+addDate[2],year);
+        action='加課';
+      }
+    }
   }
-  const annotationText=(item.annotations||[]).join('；');
-  const onlyDate=annotationText.match(/僅\s*(\d{1,2})\/(\d{1,2})/);
-  if(onlyDate){
-    const d=parseDateFlexible(onlyDate[1]+'/'+onlyDate[2],year);
-    if(d) return [{
-      id:'',fixedId:'',originalDate:'',originalTime:'',action:'加課',
-      newDate:d,newTime:item.time,student:item.student,course:item.course,
-      teacher:item.teacher,site:item.site,
-      note:'[紫色調課] 單次課程：'+annotationText+'；字色 '+(item.colorHex||'未知'),
-      source:'開學課表',colorStatus:'purple',colorHex:item.colorHex||''
-    }];
-  }
-  return [];
+
+  if(!newDate) return [];
+  return [{
+    id:'',fixedId:'',weekday:item.weekday,originalDate:'',originalTime:'',
+    action,newDate,newTime,student:item.student,course:item.course,
+    teacher:item.teacher,site:item.site,
+    note:'[紫色調課] '+originNote+'單次課程：'+(item.raw||item.student)+'；備註：'+(annotationText||'無')+'；字色 '+(item.colorHex||'未知'),
+    source:'開學課表',colorStatus:'purple',colorHex:item.colorHex||''
+  }];
 }
 
 function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
