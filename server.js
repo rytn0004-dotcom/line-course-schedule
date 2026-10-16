@@ -11,6 +11,10 @@ const TZ = process.env.TIMEZONE || 'Asia/Taipei';
 const RETRIES = Number(process.env.GOOGLE_API_MAX_RETRIES || 4);
 const PORT = Number(process.env.PORT || 10000);
 const DEFAULT_DAYS = Math.max(1, Number(process.env.SCHEDULE_BUILD_DAYS || 30));
+const SOURCE_PREVIEW_ONLY = ['1','true','yes','是','啟用'].includes(normValue(process.env.SCHEDULE_PREVIEW_ONLY || ''));
+const PREVIEW_SOURCE_SHEET_ID = String(process.env.PREVIEW_SOURCE_SHEET_ID || SHEET_ID).trim();
+const PREVIEW_SOURCE_GID = String(process.env.PREVIEW_SOURCE_GID || '').trim();
+const PREVIEW_SOURCE_TAB_NAME = String(process.env.PREVIEW_SOURCE_TAB_NAME || '開學課表').trim();
 const AUTO_CREATE_REMINDERS = ['1','true','yes','是','啟用'].includes(normValue(process.env.SCHEDULE_AUTO_CREATE_REMINDERS || '是'));
 
 const auth = new google.auth.GoogleAuth({
@@ -1240,6 +1244,7 @@ async function syncSourceIntoSchedule(){
 }
 
 async function build({fromDate=todayKey(),days=DEFAULT_DAYS}={}){
+  if(SOURCE_PREVIEW_ONLY) throw new Error('目前是只讀預覽模式，已停用課表重建與所有寫入。');
   if(!/^\d{4}-\d{2}-\d{2}$/.test(fromDate)) throw new Error('fromDate 必須是 YYYY-MM-DD');
   const sourceSync=await syncSourceIntoSchedule();
   await ensureSheet('課程提醒');
@@ -1276,6 +1281,9 @@ async function buildOnce(options){
 }
 
 app.get('/build',async(req,res)=>{
+  if(SOURCE_PREVIEW_ONLY){
+    return res.status(403).json({ok:false,mode:'preview-only',writesPerformed:false,error:'只讀預覽模式已停用 /build，沒有寫入任何資料。'});
+  }
   try{
     const fromDate=req.query.from || todayKey();
     const days=Math.min(180,Math.max(1,Number(req.query.days||DEFAULT_DAYS)));
@@ -1627,29 +1635,55 @@ function readThemeColors(theme){
 }
 
 async function readRawSourcePreview(){
-  const sourcePromise=retry('read raw 開學課表 with font colors',()=>sheets.spreadsheets.get({
-    spreadsheetId:SHEET_ID,
-    ranges:[qsheet('開學課表')+'!A:Z'],
-    includeGridData:true
+  const sourceSpreadsheetId=PREVIEW_SOURCE_SHEET_ID;
+  const metadata=await retry('read preview source spreadsheet metadata',()=>sheets.spreadsheets.get({
+    spreadsheetId:sourceSpreadsheetId,
+    includeGridData:false,
+    fields:'properties(spreadsheetTheme),sheets(properties(sheetId,title,gridProperties))'
   }));
-  const otherPromise=retry('read raw fixed and adjustment preview',()=>sheets.spreadsheets.values.batchGet({
-    spreadsheetId:SHEET_ID,
-    ranges:[qsheet('固定課表')+'!A:K',qsheet('調課課程')+'!A:M'],
-    majorDimension:'ROWS'
+  const availableSheets=(metadata.data.sheets||[]);
+  let selectedSheet=null;
+  if(PREVIEW_SOURCE_GID && /^\d+$/.test(PREVIEW_SOURCE_GID)){
+    selectedSheet=availableSheets.find(x=>String(x.properties && x.properties.sheetId)===PREVIEW_SOURCE_GID)||null;
+  }
+  if(!selectedSheet){
+    selectedSheet=availableSheets.find(x=>str(x.properties && x.properties.title)===PREVIEW_SOURCE_TAB_NAME)||null;
+  }
+  if(!selectedSheet){
+    throw new Error('預覽來源分頁不存在。請檢查 PREVIEW_SOURCE_GID / PREVIEW_SOURCE_TAB_NAME；可用分頁：'+availableSheets.map(x=>str(x.properties && x.properties.title)+' (gid '+str(x.properties && x.properties.sheetId)+')').join('、'));
+  }
+  const sourceTitle=str(selectedSheet.properties.title);
+  const sourceResponse=await retry('read preview source font colors',()=>sheets.spreadsheets.get({
+    spreadsheetId:sourceSpreadsheetId,
+    ranges:[qsheet(sourceTitle)+'!A:Z'],
+    includeGridData:true,
+    fields:'properties(spreadsheetTheme),sheets(properties(sheetId,title),data(rowData(values(formattedValue,userEnteredValue,effectiveFormat(textFormat(foregroundColor,foregroundColorStyle)),userEnteredFormat(textFormat(foregroundColor,foregroundColorStyle)),textFormatRuns))))'
   }));
-  const [sourceResponse,otherResponse]=await Promise.all([sourcePromise,otherPromise]);
-  const sourceSheet=(sourceResponse.data.sheets||[]).find(x=>str(x.properties && x.properties.title)==='開學課表');
-  if(!sourceSheet) throw new Error('Google 試算表找不到「開學課表」分頁。');
+  const sourceSheet=(sourceResponse.data.sheets||[]).find(x=>Number(x.properties && x.properties.sheetId)===Number(selectedSheet.properties.sheetId));
+  if(!sourceSheet) throw new Error('無法讀取指定來源分頁的格線資料。');
   const themeColors=readThemeColors(sourceResponse.data.properties && sourceResponse.data.properties.spreadsheetTheme);
   const rawRows=gridRowsForPreview(sourceSheet);
-  const otherRows=(otherResponse.data.valueRanges||[]).map(v=>v.values||[]);
-  return {rawRows,fixedRows:otherRows[0]||[],adjustRows:otherRows[1]||[],themeColors};
+  let fixedRows=[],adjustRows=[];
+  try{
+    const other=await retry('read optional ID matching data for preview',()=>sheets.spreadsheets.values.batchGet({
+      spreadsheetId:sourceSpreadsheetId,
+      ranges:[qsheet('固定課表')+'!A:K',qsheet('調課課程')+'!A:M'],
+      majorDimension:'ROWS'
+    }));
+    const result=other.data.valueRanges||[];
+    fixedRows=(result[0] && result[0].values)||[];
+    adjustRows=(result[1] && result[1].values)||[];
+  }catch(e){
+    console.warn('Optional 固定課表／調課課程 tabs unavailable; use temporary preview IDs only:',str(e && e.message));
+  }
+  return {rawRows,fixedRows,adjustRows,themeColors,sourceSheetId:String(selectedSheet.properties.sheetId),sourceSheetTitle:sourceTitle,sourceSpreadsheetId};
 }
+
 
 app.get('/preview-source',async(req,res)=>{
   try{
     const year=Number(req.query.year||new Date().getFullYear());
-    const {rawRows,fixedRows,adjustRows,themeColors}=await readRawSourcePreview();
+    const {rawRows,fixedRows,adjustRows,themeColors,sourceSheetId,sourceSheetTitle,sourceSpreadsheetId}=await readRawSourcePreview();
     const parsed=parseRawSchedule(rawRows,year,themeColors);
     const fixed=matchRawFixedIds(parsed.fixed,fixedRows);
     const fixedIdByKey=new Map(fixed.map(x=>[rawFixedLogicalKey(x),x.id]));
@@ -1665,8 +1699,9 @@ app.get('/preview-source',async(req,res)=>{
       unclassified:parsed.unclassifiedItems.length
     };
     res.json({
-      ok:true,mode:'preview-only',sourceSheet:'開學課表',writesPerformed:false,
-      colorRulesApplied:true,year,colorSummary,
+      ok:true,mode:'preview-only',sourceSheetId,sourceSheetTitle,
+      sourceSpreadsheetId,
+      writesPerformed:false,colorRulesApplied:true,year,colorSummary,
       fixedCount:fixed.length,adjustmentCount:adjustments.length,
       redCount:parsed.redItems.length,unclassifiedCount:parsed.unclassifiedItems.length,
       fixed:fixed.slice(0,300),adjustments:adjustments.slice(0,300),
@@ -1678,6 +1713,7 @@ app.get('/preview-source',async(req,res)=>{
     res.status(500).json({ok:false,mode:'preview-only',writesPerformed:false,error:e.message});
   }
 });
+
 
 app.listen(PORT,()=>console.log(`LINE Course Schedule Manager v1.2 listening on ${PORT}`));
 // Safety: do not build or write Google Sheets automatically at startup or on a timer.
