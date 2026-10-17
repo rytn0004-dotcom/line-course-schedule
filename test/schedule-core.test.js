@@ -198,7 +198,7 @@ test('whole-day rules with a student/course/teacher field do not affect every co
     action: '整日調課到2026-10-20',
     newDate: '2026-10-20',
     newTime: '',
-    student: '',
+    student: '新生',
     course: '英文',
     teacher: '張老師',
     source: '課程校正'
