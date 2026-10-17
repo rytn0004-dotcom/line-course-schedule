@@ -2145,15 +2145,19 @@ function assignPreviewAdjustmentIds(adjustments, existingAdjustRows){
     // 才能就地補足下課時間，而不是再新增一筆重複調課。
     if(!id && x.colorStatus==='purple' && x.newDate && timeKey(x.newTime) && x.student){
       const candidates=existing.filter(y=>
-        // 舊版資料的備註可能直接以「[紫色調課]」開頭，沒有匯入來源前綴；
-        // 使用紫色標記加上日期、開始時間、學生和動作的唯一配對做安全辨識。
+        // 舊版資料備註可能沒有「來源：開學課表」前綴；
+        // 以紫色標記、日期、開始時間、學生和動作一起比對。
         y.note.includes('[紫色調課]') &&
         y.action===str(x.action) &&
         y.newDate===x.newDate &&
         timeKey(y.newTime)===timeKey(x.newTime) &&
         compact(y.student)===compact(x.student)
       );
-      if(candidates.length===1) id=candidates[0].id;
+      // 前次錯誤建置可能已新增帶有「來源：開學課表自動解析」前綴的重複列。
+      // 若唯一的舊列以 [紫色調課] 開頭，優先沿用它，讓來源同步可同時停用重複列。
+      const legacyRows=candidates.filter(y=>y.note.trim().startsWith('[紫色調課]'));
+      if(legacyRows.length===1) id=legacyRows[0].id;
+      else if(candidates.length===1) id=candidates[0].id;
     }
     if(!id){do{id='ADJ'+String(++max).padStart(3,'0');}while(used.has(id)); used.add(id); byKey.set(key,id);}
     return {...x,id};
