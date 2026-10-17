@@ -1284,7 +1284,12 @@ async function syncSourceIntoSchedule(){
   }
   const fixedIdByKey=new Map(matchedFixed.map(x=>[rawFixedLogicalKey(x),x.id]));
   const assignedAdjustments=assignPreviewAdjustmentIds(
-    parsed.adjustments.map(x=>({...x,fixedId:fixedIdByKey.get(rawFixedLogicalKey(x))||x.fixedId||''})),
+    parsed.adjustments.map(x=>({...x,fixedId:fixedIdByKey.get([
+      norm(x.weekday),
+      parseTimeRange(x.originalTime).start||timeKey(x.originalTime),
+      compact(stripScheduleAnnotation(x.student)),
+      compact(stripScheduleAnnotation(x.teacher))
+    ].join('|'))||x.fixedId||''})),
     adjustRows
   );
   const adjustToAdd=assignedAdjustments.filter(x=>x.id && !existingAdjustIds.has(x.id));
@@ -1676,11 +1681,11 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
     if(!teacher) continue;
     for(const [col,weekday] of Object.entries(weekdayCols)){
       for(const item of parseRawCourseCell(row[Number(col)],teacher,weekday,year,themeColors)){
+        if(item.durationAdjustmentMinutes){
+          durationRows.push(item);
+          continue;
+        }
         if(item.colorStatus==='black' || item.colorStatus==='yellow'){
-          if(item.durationAdjustmentMinutes){
-            durationRows.push(item);
-            continue;
-          }
           fixed.push(item);
           adjustments.push(...parseRawAdjustmentAnnotations(item,year));
         } else if(item.colorStatus==='purple'){
