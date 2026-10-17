@@ -1597,11 +1597,12 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
   // 修復舊版已匯入的紫色單次課程：若來源行明確有完整時段，
   // 但自動匯入列只存了開始時間，僅補足「新時間」的結束時間；保留其他人工欄位。
   for(const x of assignedAdjustments){
-    if(!x.id || x.colorStatus!=='purple' || !timeKey(x.newTime) || !timeKey(x.newEndTime)) continue;
+    if(!x.id || !timeKey(x.newTime) || !timeKey(x.newEndTime)) continue;
     const old=existingAdjustById.get(x.id);
     if(!old || ah['新時間']===undefined || ah['備註']===undefined) continue;
     const oldNote=str(old.values[ah['備註']]);
-    if(!oldNote.includes('[紫色調課]')) continue;
+    const isImportedTimeRule=oldNote.includes('來源：開學課表自動解析') || oldNote.includes('[紫色調課]');
+    if(!isImportedTimeRule) continue;
     const oldTime=str(old.values[ah['新時間']]);
     const oldRange=parseTimeRange(oldTime);
     // 只修復「開始時間相同、但缺少結束時間」的舊列，不覆蓋已有人為調整的完整時段。
