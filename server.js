@@ -10,7 +10,10 @@ const SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const TZ = process.env.TIMEZONE || 'Asia/Taipei';
 const RETRIES = Number(process.env.GOOGLE_API_MAX_RETRIES || 4);
 const PORT = Number(process.env.PORT || 10000);
-const DEFAULT_DAYS = Math.max(1, Number(process.env.SCHEDULE_BUILD_DAYS || 30));
+const configuredBuildDays = Number(process.env.SCHEDULE_BUILD_DAYS || 30);
+const DEFAULT_DAYS = Number.isInteger(configuredBuildDays) && configuredBuildDays >= 1
+  ? Math.min(180, configuredBuildDays)
+  : 30;
 const PREVIEW_SOURCE_SHEET_ID = String(process.env.PREVIEW_SOURCE_SHEET_ID || SHEET_ID).trim();
 const PREVIEW_SOURCE_GID = String(process.env.PREVIEW_SOURCE_GID || '').trim();
 const PREVIEW_SOURCE_TAB_NAME = String(process.env.PREVIEW_SOURCE_TAB_NAME || '開學課表').trim();
@@ -170,13 +173,20 @@ function safeReplaceTemplate(t, values){
 async function ensureSheet(title){
   const r=await retry('get spreadsheet metadata',()=>sheets.spreadsheets.get({spreadsheetId:SHEET_ID,fields:'sheets.properties'}));
   const exists=(r.data.sheets||[]).some(s=>s.properties?.title===title);
-  if(exists)return;
+  if(exists)return false;
   await retry('create sheet '+title,()=>sheets.spreadsheets.batchUpdate({spreadsheetId:SHEET_ID,requestBody:{requests:[{addSheet:{properties:{title}}}]}}));
+  return true;
 }
 async function ensureSheetHeaders(title,headers){
-  await ensureSheet(title); const end=String.fromCharCode(64+headers.length);
-  const r=await retry('read '+title+' headers',()=>sheets.spreadsheets.values.get({spreadsheetId:SHEET_ID,range:qsheet(title)+'!A1:'+end+'5'}));
-  if(findHeaderRow(r.data.values||[],headers)>=0)return;
+  const created=await ensureSheet(title);
+  const end=columnLetter(headers.length);
+  const r=await retry('read '+title+' headers',()=>sheets.spreadsheets.values.get({spreadsheetId:SHEET_ID,range:qsheet(title)+'!A:Z'}));
+  const rows=r.data.values||[];
+  if(findHeaderRow(rows,headers)>=0)return;
+  const hasData=rows.some(row=>Array.isArray(row)&&row.some(value=>str(value)!==''));
+  if(hasData){
+    throw new Error('工作表「'+title+'」已有資料但找不到必要標題列；為避免覆寫資料，已停止自動建立標題。請先檢查欄位。');
+  }
   await retry('write '+title+' headers',()=>sheets.spreadsheets.values.update({spreadsheetId:SHEET_ID,range:qsheet(title)+'!A1:'+end+'1',valueInputOption:'RAW',requestBody:{values:[headers]}}));
 }
 async function readSheets(){
@@ -520,9 +530,17 @@ function parseInlineAdjustments(fixed){
   return out;
 }
 function parseContacts(rows){
-  const hr=findHeaderRow(rows,['姓名','身分','學生姓名/關聯','LINE User ID','通知啟用']);
-  if(hr<0) throw new Error('聯絡人欄位不正確。');
+  const hr=findHeaderRow(rows,['姓名','身分','LINE User ID','通知啟用']);
+  if(hr<0) throw new Error('聯絡人欄位不正確：缺少姓名、身分、LINE User ID 或通知啟用。');
   const h=hmap(rows[hr]), out=[];
+  const relationIndex=[
+    h['學生姓名/關聯（可多位）'],
+    h['學生姓名/關聯'],
+    h['學生姓名／關聯（可多位）'],
+    h['學生姓名／關聯'],
+    h['學生姓名關聯']
+  ].find(index=>index!==undefined);
+  if(relationIndex===undefined) throw new Error('聯絡人欄位不正確：找不到「學生姓名/關聯」欄位（可接受「學生姓名/關聯（可多位）」）。');
   for(let i=hr+1;i<rows.length;i++){
     const r=rows[i]||[];
     const userId=str(r[h['LINE User ID']]);
@@ -530,7 +548,7 @@ function parseContacts(rows){
     if(norm(r[h['通知啟用']])!=='是') continue;
     const role=str(r[h['身分']]);
     if(role!=='家長' && role!=='老師') continue;
-    out.push({name:str(r[h['姓名']]),role,related:str(r[h['學生姓名/關聯']]),userId});
+    out.push({name:str(r[h['姓名']]),role,related:str(r[relationIndex]),userId});
   }
   return out;
 }
@@ -681,10 +699,32 @@ function buildRows(fixed, adjusts, fromDate, days){
   }
   return final;
 }
-async function writeActual(rows){
-  await retry('clear 實際課程',()=>sheets.spreadsheets.values.clear({spreadsheetId:SHEET_ID,range:`${qsheet('實際課程')}!A3:M`,requestBody:{}}));
-  if(!rows.length) return;
-  await retry('write 實際課程',()=>sheets.spreadsheets.values.update({spreadsheetId:SHEET_ID,range:`${qsheet('實際課程')}!A3:M${rows.length+2}`,valueInputOption:'RAW',requestBody:{values:rows}}));
+async function writeActual(rows, previousRows=[]){
+  let lastExistingDataRow=0;
+  for(let i=2;i<(previousRows||[]).length;i++){
+    const row=previousRows[i]||[];
+    if(row.some(value=>str(value)!=='')) lastExistingDataRow=i+1;
+  }
+  const previousDataCount=Math.max(0,lastExistingDataRow-2);
+  if(rows.length===0 && previousDataCount>0){
+    throw new Error('安全保護：本次實際課程結果為 0 筆，但工作表仍有 '+previousDataCount+' 筆舊課程；已拒絕清空資料，請先檢查來源解析及日期範圍。');
+  }
+  // 先寫入新資料；只有成功後才清除超出新範圍的舊尾列，避免先清空再遇到寫入失敗。
+  if(rows.length){
+    await retry('write 實際課程',()=>sheets.spreadsheets.values.update({
+      spreadsheetId:SHEET_ID,
+      range:`${qsheet('實際課程')}!A3:M${rows.length+2}`,
+      valueInputOption:'RAW',requestBody:{values:rows}
+    }));
+  }
+  const newLastRow=rows.length+2;
+  if(lastExistingDataRow>newLastRow){
+    await retry('clear stale tail 實際課程',()=>sheets.spreadsheets.values.clear({
+      spreadsheetId:SHEET_ID,
+      range:`${qsheet('實際課程')}!A${newLastRow+1}:M${lastExistingDataRow}`,
+      requestBody:{}
+    }));
+  }
 }
 
 function actualObjects(actualRows){
@@ -949,8 +989,16 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
   // 以邏輯群組建立索引。舊版提醒 ID 可能不同，因此不能只靠 ID 判斷；
   // 只要日期／身分／收件人／老師／校區相同，就同步最新合併內容並保留原 ID。
   const parsed=parseReminderRows(reminderRows);
+  const hasReminderData=(reminderRows||[]).some(row=>Array.isArray(row)&&row.some(value=>str(value)!==''));
+  if(parsed.headerRow<0 && hasReminderData){
+    throw new Error('課程提醒已有資料但找不到標準標題列；為避免覆寫既有資料，已停止同步。');
+  }
   const headers=parsed.headers?.length ? parsed.headers : REMINDER_HEADERS;
   const h=hmap(headers);
+  const missingReminderHeaders=REMINDER_HEADERS.filter(name=>h[name]===undefined);
+  if(parsed.headerRow>=0 && missingReminderHeaders.length){
+    throw new Error('課程提醒缺少必要欄位：'+missingReminderHeaders.join('、')+'；已停止同步，未寫入提醒。');
+  }
   const logicalKeyForExpected=x=>x.role==='老師'
     ? [x.role,compact(x.recipient),x.date,compact(x.teacher),compact(x.site)].join('|')
     : [x.role,compact(x.recipient),x.date,x.time,compact(x.teacher),compact(x.site)].join('|');
@@ -1098,6 +1146,8 @@ async function syncSourceIntoSchedule(){
   const parsed=parseRawSchedule(rawRows,year,themeColors);
   const fixedHeaderRow=findHeaderRow(fixedRows,['固定課表ID','星期','上課時間','學生','課程','老師','校區','有效迄日','啟用']);
   if(fixedHeaderRow<0) throw new Error('來源同步停止：固定課表欄位不正確，沒有寫入任何資料。');
+  const adjustHeaderRow=findHeaderRow(adjustRows,['調課ID','原固定課表ID','原日期','原時間','動作','新日期','新時間','學生','確認']);
+  if(adjustHeaderRow<0) throw new Error('來源同步停止：調課課程欄位不正確；尚未寫入固定課表或調課資料。');
   const fixedHeaders=(fixedRows[fixedHeaderRow]||[]).map(str);
   const fh=hmap(fixedHeaders);
   const existingFixedIds=new Set();
@@ -1129,8 +1179,8 @@ async function syncSourceIntoSchedule(){
     set('老師',x.teacher);
     set('校區',normalizeSite(x.site));
     set('有效迄日','');
-    set('啟用','是');
-    set('備註','來源：開學課表自動同步'+(x.note?'；'+x.note:''));
+    set('啟用',x.colorStatus==='yellow'?'否':'是');
+    set('備註','來源：開學課表自動同步'+(x.colorStatus==='yellow'?'；黃色確認中，預設停用；字色 '+(x.colorHex||'未知'):'')+(x.note?'；'+x.note:''));
     set('通知模板','家長一般/老師通知');
     return row;
   };
@@ -1147,6 +1197,9 @@ async function syncSourceIntoSchedule(){
       fixedUpdates.push({rowNumber:old.rowNumber,values:corrected});
     }
   }
+  const blockedSourceKeys=new Set(
+    [...(parsed.redItems||[]),...(parsed.unclassifiedItems||[])].map(rawFixedLogicalKey)
+  );
   // 已由舊版錯誤匯入的「無法排課」佔位列，不再當成課程；僅停用程式自動建立的列。
   for(const [id,old] of existingFixedById){
     const oldNote=fh['備註']===undefined?'':str(old.values[fh['備註']]);
@@ -1156,6 +1209,24 @@ async function syncSourceIntoSchedule(){
     while(row.length<fixedHeaders.length) row.push('');
     if(fh['啟用']!==undefined) row[fh['啟用']]='否';
     if(fh['備註']!==undefined) row[fh['備註']]='來源：開學課表自動同步；已排除不可排課時段';
+    fixedUpdates.push({rowNumber:old.rowNumber,values:row.slice(0,fixedHeaders.length)});
+  }
+  const rowsAlreadyCorrected=new Set(fixedUpdates.map(u=>u.rowNumber));
+  for(const [id,old] of existingFixedById){
+    if(rowsAlreadyCorrected.has(old.rowNumber)) continue;
+    const oldNote=fh['備註']===undefined?'':str(old.values[fh['備註']]);
+    if(!oldNote.includes('來源：開學課表自動同步')) continue;
+    const oldKey=rawFixedLogicalKey({
+      weekday:str(old.values[fh['星期']]),
+      time:str(old.values[fh['上課時間']]),
+      student:str(old.values[fh['學生']]),
+      teacher:str(old.values[fh['老師']])
+    });
+    if(!blockedSourceKeys.has(oldKey)) continue;
+    const row=old.values.slice();
+    while(row.length<fixedHeaders.length) row.push('');
+    if(fh['啟用']!==undefined) row[fh['啟用']]='否';
+    if(fh['備註']!==undefined) row[fh['備註']]='來源：開學課表自動同步；來源字色為紅色或無法判讀，已停用';
     fixedUpdates.push({rowNumber:old.rowNumber,values:row.slice(0,fixedHeaders.length)});
   }
   // 使用者已確認目前有效課程的預設校區為「愛學館信義光復校」。
@@ -1189,8 +1260,6 @@ async function syncSourceIntoSchedule(){
     }));
   }
 
-  const adjustHeaderRow=findHeaderRow(adjustRows,['調課ID','原固定課表ID','原日期','原時間','動作','新日期','新時間','學生','確認']);
-  if(adjustHeaderRow<0) throw new Error('來源同步停止：調課課程欄位不正確；固定課表新增 '+fixedOutput.length+' 列，但調課資料尚未同步。');
   const adjustHeaders=(adjustRows[adjustHeaderRow]||[]).map(str);
   const ah=hmap(adjustHeaders);
   const existingAdjustIds=new Set();
@@ -1243,7 +1312,8 @@ async function syncSourceIntoSchedule(){
 }
 
 async function build({fromDate=todayKey(),days=DEFAULT_DAYS}={}){
-  if(!/^\d{4}-\d{2}-\d{2}$/.test(fromDate)) throw new Error('fromDate 必須是 YYYY-MM-DD');
+  if(!isValidDateKey(fromDate)) throw new Error('fromDate 必須是有效的 YYYY-MM-DD 日期');
+  if(!Number.isInteger(days)||days<1||days>180) throw new Error('days 必須是 1 到 180 的整數');
   const sourceSync=await syncSourceIntoSchedule();
   await ensureSheet('課程提醒');
   await ensureSheetHeaders('課程校正',CORRECTION_HEADERS);
@@ -1262,7 +1332,7 @@ async function build({fromDate=todayKey(),days=DEFAULT_DAYS}={}){
     fixedMatches:diagFixed.map(f=>({id:f.id,weekday:f.weekday,time:f.time,endTime:f.endTime,until:f.until,course:f.course,teacher:f.teacher,site:f.site,note:f.note})),
     actualMatches:diagActual.map(x=>({courseId:x.courseId,date:x.date,weekday:x.weekday,time:x.time,student:x.student,course:x.course,teacher:x.teacher,site:x.site,source:x.source,fixedId:x.fixedId,adjustId:x.adjustId,adjustResult:x.adjustResult,note:x.note}))
   });
-  await writeActual(actual);
+  await writeActual(actual,oldActualRows);
   const reminder=AUTO_CREATE_REMINDERS
     ? await syncReminders(actual,reminderRows,contacts,templates,settings,fromDate,days,fixedTemplateByIdInput)
     : {expectedCount:0,created:0,updated:0,disabled:0,reminderServiceEnabled:settings.enabled==='是',autoCreateReminders:false,lineSending:false};
