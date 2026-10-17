@@ -2049,8 +2049,9 @@ function rawFixedLogicalKey(x){
 }
 
 function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {}, referenceDate=''){
+  const parserYear=Number(year)||Number(todayKey().slice(0,4));
   const dateReference=isValidDateKey(String(referenceDate)) ? String(referenceDate) :
-    String(Number(year)||new Date().getFullYear())+'-01-01';
+    (parserYear===Number(todayKey().slice(0,4))?todayKey():String(parserYear)+'-01-01');
   if(!rows.length) throw new Error('找不到「開學課表」資料。');
   const header=rows[0]||[];
   const teacherAliases=new Set(['老師','授課老師','班別負責老師','負責老師']);
