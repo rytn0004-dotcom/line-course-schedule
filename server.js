@@ -2129,7 +2129,7 @@ function assignPreviewAdjustmentIds(adjustments, existingAdjustRows){
     const h=hmap(existingAdjustRows[hr]);
     for(let i=hr+1;i<existingAdjustRows.length;i++){
       const r=existingAdjustRows[i]||[], id=str(r[h['調課ID']]);
-      if(id) existing.push({id,fixedId:str(r[h['原固定課表ID']]),originalDate:parseDateFlexible(r[h['原日期']]),originalTime:timeKey(r[h['原時間']]),action:str(r[h['動作']]),newDate:parseDateFlexible(r[h['新日期']]),newTime:parseTimeRange(r[h['新時間']]).start||timeKey(r[h['新時間']]),student:str(r[h['學生']])});
+      if(id) existing.push({id,fixedId:str(r[h['原固定課表ID']]),originalDate:parseDateFlexible(r[h['原日期']]),originalTime:timeKey(r[h['原時間']]),action:str(r[h['動作']]),newDate:parseDateFlexible(r[h['新日期']]),newTime:parseTimeRange(r[h['新時間']]).start||timeKey(r[h['新時間']]),student:str(r[h['學生']]),note:h['備註']===undefined?'':str(r[h['備註']])});
     }
   }
   let max=0;
@@ -2139,6 +2139,21 @@ function assignPreviewAdjustmentIds(adjustments, existingAdjustRows){
   const used=new Set(existing.map(x=>x.id));
   return adjustments.map(x=>{
     const key=keyOf(x); let id=byKey.get(key);
+    // 舊版紫色單次課程可能已綁定到錯誤固定課表 ID，
+    // 使完整 key 不一致。若唯一一筆「本程式匯入的紫色課程」
+    // 在日期、開始時間、學生與動作上完全相同，沿用舊 ID，
+    // 才能就地補足下課時間，而不是再新增一筆重複調課。
+    if(!id && x.colorStatus==='purple' && x.newDate && timeKey(x.newTime) && x.student){
+      const candidates=existing.filter(y=>
+        y.note.includes('來源：開學課表') &&
+        y.note.includes('[紫色調課]') &&
+        y.action===str(x.action) &&
+        y.newDate===x.newDate &&
+        timeKey(y.newTime)===timeKey(x.newTime) &&
+        compact(y.student)===compact(x.student)
+      );
+      if(candidates.length===1) id=candidates[0].id;
+    }
     if(!id){do{id='ADJ'+String(++max).padStart(3,'0');}while(used.has(id)); used.add(id); byKey.set(key,id);}
     return {...x,id};
   });
@@ -2270,6 +2285,6 @@ app.get('/preview-source',async(req,res)=>{
 
 
 if(require.main===module) app.listen(PORT,()=>console.log(`LINE Course Schedule Manager v1.2 listening on ${PORT}`));
-module.exports={app,isYes,isNo,isObsoleteImportedRow,parseDateFlexible,splitClassRoster,normalizeMemberList,parseRawSchedule,parseAdjust,parseInlineAdjustments,parseFixed,parseSettings,buildRows,mergeActualRows,makeReminderRows,mergeReminderItems,actualObjects,missingReminderTimeWarnings,missingActualEndTimeWarnings,adminAuthorized};
+module.exports={app,isYes,isNo,isObsoleteImportedRow,parseDateFlexible,splitClassRoster,normalizeMemberList,parseRawSchedule,assignPreviewAdjustmentIds,parseAdjust,parseInlineAdjustments,parseFixed,parseSettings,buildRows,mergeActualRows,makeReminderRows,mergeReminderItems,actualObjects,missingReminderTimeWarnings,missingActualEndTimeWarnings,adminAuthorized};
 // Safety: do not build or write Google Sheets automatically at startup or on a timer.
 // Use the explicit /build endpoint only after reviewing the source preview.
