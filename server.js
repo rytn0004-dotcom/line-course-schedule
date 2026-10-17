@@ -1316,10 +1316,10 @@ async function syncSourceIntoSchedule(){
   const adjustHeaders=(adjustRows[adjustHeaderRow]||[]).map(str);
   const ah=hmap(adjustHeaders);
   const existingAdjustIds=new Set();
-  for(let i=adjustHeaderRow+1;i<adjustRows.length;i++){
-    const id=str((adjustRows[i]||[])[ah['調課ID']]);
-    if(id) existingAdjustIds.add(id);
-  }
+  const existingAdjustById=new Map();
+  const existingAdjustBySignature=new Map();
+  const adjustmentUpdates=[];
+  const adjustmentRowsUsed=new Set();
   const fixedIdByKey=new Map(matchedFixed.map(x=>[rawFixedLogicalKey(x),x.id]));
   const assignedAdjustments=assignPreviewAdjustmentIds(
     parsed.adjustments.map(x=>({
@@ -1334,11 +1334,56 @@ async function syncSourceIntoSchedule(){
     })),
     adjustRows
   );
-  const adjustToAdd=assignedAdjustments.filter(x=>x.id && !existingAdjustIds.has(x.id));
-  const adjustOutput=adjustToAdd.map(x=>{
-    const row=new Array(adjustHeaders.length).fill('');
-    const set=(name,value)=>{ if(ah[name]!==undefined) row[ah[name]]=value??''; };
-    set('調課ID',x.id);
+
+  const normalizedAdjustStudent=value=>{
+    const source=str(value);
+    const group=source.match(/^(.*?團班)\s*[（(]([^（）()]*)[）)]$/);
+    return compact(normalizeStudentNameForContact(group?group[2]:source));
+  };
+  const adjustmentSignature=x=>[
+    parseDateFlexible(x.originalDate)||'',
+    parseTimeRange(x.originalTime).start||timeKey(x.originalTime)||'',
+    parseDateFlexible(x.newDate)||'',
+    normalizedAdjustStudent(x.student),
+    compact(str(x.teacher))
+  ].join('|');
+  const isSourceImportedAdjustment=note=>
+    /來源：開學課表/.test(str(note))||
+    /^\[(?:單次課程|單次／紫色調課|紫色調課)\]/.test(str(note));
+
+  for(let i=adjustHeaderRow+1;i<adjustRows.length;i++){
+    const row=adjustRows[i]||[];
+    const id=str(row[ah['調課ID']]);
+    if(!id)continue;
+    existingAdjustIds.add(id);
+    const originalDate=parseDateFlexible(row[ah['原日期']]);
+    const originalTime=parseTimeRange(row[ah['原時間']]).start||timeKey(row[ah['原時間']]);
+    const newDate=parseDateFlexible(row[ah['新日期']]);
+    const newRange=parseTimeRange(row[ah['新時間']]);
+    const record={
+      id,rowNumber:i+1,values:row,
+      fixedId:str(row[ah['原固定課表ID']]),
+      originalDate,originalTime,
+      action:str(row[ah['動作']]),newDate,
+      newTime:newRange.start&&newRange.end?newRange.start+'-'+newRange.end:(newRange.start||timeKey(row[ah['新時間']])),
+      student:str(row[ah['學生']]),course:str(row[ah['新課程']]),
+      teacher:str(row[ah['新老師']]),site:str(row[ah['新校區']]),
+      confirm:str(row[ah['確認']]),note:str(row[ah['備註']])
+    };
+    record.signature=adjustmentSignature(record);
+    record.sourceImported=isSourceImportedAdjustment(record.note)||/^ADJ\d+$/i.test(id)&&/紫色|單次|來源：開學課表/.test(record.note);
+    existingAdjustById.set(id,record);
+    if(record.signature){
+      if(!existingAdjustBySignature.has(record.signature))existingAdjustBySignature.set(record.signature,[]);
+      existingAdjustBySignature.get(record.signature).push(record);
+    }
+  }
+
+  const makeAdjustmentRow=(x,id,confirm,oldValues=[])=>{
+    const row=oldValues.slice();
+    while(row.length<adjustHeaders.length)row.push('');
+    const set=(name,value)=>{if(ah[name]!==undefined)row[ah[name]]=value??'';};
+    set('調課ID',id);
     set('原固定課表ID',x.fixedId||'');
     set('原日期',x.originalDate||'');
     set('原時間',x.originalTime||'');
@@ -1349,10 +1394,42 @@ async function syncSourceIntoSchedule(){
     set('新課程',x.course||'');
     set('新老師',x.teacher||'');
     set('新校區',x.site||'');
-    set('確認','是');
-    set('備註',x.note||'來源：開學課表自動解析');
-    return row;
-  });
+    set('確認',confirm||'是');
+    const sourceNote=str(x.note);
+    set('備註',/^來源：開學課表/.test(sourceNote)?sourceNote:'來源：開學課表自動解析；'+sourceNote);
+    return row.slice(0,adjustHeaders.length);
+  };
+
+  const adjustOutput=[];
+  for(const x of assignedAdjustments){
+    const signature=adjustmentSignature(x);
+    const exact=existingAdjustById.get(str(x.id));
+    const candidates=signature?(existingAdjustBySignature.get(signature)||[]):[];
+    const old=(exact&&exact.sourceImported?exact:null)||
+      candidates.find(row=>row.sourceImported&&!adjustmentRowsUsed.has(row.rowNumber))||
+      candidates.find(row=>!adjustmentRowsUsed.has(row.rowNumber))||
+      null;
+
+    if(old){
+      // Preserve an existing ID and a deliberate confirmation-off state, but refresh parser-owned fields.
+      adjustmentRowsUsed.add(old.rowNumber);
+      if(!old.sourceImported){
+        // A manually maintained adjustment with the same logical date/student/teacher is authoritative.
+        continue;
+      }
+      const values=makeAdjustmentRow(x,old.id,old.confirm||'是',old.values);
+      if(JSON.stringify(old.values.slice(0,adjustHeaders.length))!==JSON.stringify(values)){
+        adjustmentUpdates.push({rowNumber:old.rowNumber,values});
+      }
+      continue;
+    }
+
+    if(existingAdjustIds.has(str(x.id))){
+      // Never overwrite an existing row solely because an ID happens to collide.
+      continue;
+    }
+    adjustOutput.push(makeAdjustmentRow(x,x.id,'是'));
+  }
   const sourceWriteData=[];
   for(const u of fixedUpdates){
     sourceWriteData.push({
