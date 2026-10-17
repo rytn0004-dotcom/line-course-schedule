@@ -6,6 +6,7 @@ const {
   extractReminderStudentNames,
   parseDurationTargetDates,
   parseSameDayTimeChangeNote,
+  normalizeStudentNameForContact,
   parseSingleDateOnlyNote,
   parseTeacherConfirmUntil,
   splitWrappedCourseLines
@@ -632,7 +633,7 @@ function buildRows(fixed, adjusts, fromDate, days){
       if(f.until&&/^\d{4}-\d{2}-\d{2}$/.test(f.until)&&d>f.until)continue;
       if(norm(f.weekday)!==norm(wd))continue;
 
-      const base={date:d,weekday:wd,time:f.time,student:f.student,course:f.course,teacher:f.teacher,site:f.site,source:'固定課表',fixedId:f.id,adjustId:'',adjustResult:'無',note:f.note||'',template:f.template||''};
+      const base={date:d,weekday:wd,time:f.endTime?f.time+'-'+f.endTime:f.time,student:f.student,course:f.course,teacher:f.teacher,site:f.site,source:'固定課表',fixedId:f.id,adjustId:'',adjustResult:'無',note:f.note||'',template:f.template||''};
       const wide=dateWide.get(d);
       const k=d+'|'+compact(f.student)+'|'+f.time;
       const adj=byKey.get(k)||[];
@@ -894,8 +895,9 @@ function makeReminderRows(actual, contacts, templates, settings, fixedTemplateBy
     if(settings.parentNotify==='是'){
       // 團班可能同時包含多位學生；家長匹配必須逐一拆開學生姓名，
       // 否則「葉依柔、陳翊森」會被當成單一姓名，導致兩位學生的家長都收不到通知。
-      const studentMembers = normalizeMemberList(c.student);
-      const parentStudents = studentMembers.length ? studentMembers : [c.student];
+      const studentMembers = extractReminderStudentNames(c.student);
+      const rosterlessGroup = /團班/.test(String(c.course||c.student)) && studentMembers.length===0;
+      const parentStudents = studentMembers.length ? studentMembers : (rosterlessGroup ? [] : [c.student]);
       for(const studentMember of parentStudents){
         for(const person of contacts.filter(x=>x.role==='家長' && includesStudent(x.related,studentMember))){
         const preferred = fixedTemplateById.get(c.fixedId) || '';
@@ -1791,7 +1793,8 @@ function rawFixedLogicalKey(x){
   const group=student.match(/^(.*?團班)\s*[（(]([^（）()]*)[）)]$/);
   if(group){course=course||group[1];student=group[2];}
   const normalizedStudent=normalizeStudentNameForContact(student);
-  return [norm(x.weekday),start,compact(course),compact(normalizedStudent),compact(stripScheduleAnnotation(x.teacher))].join('|');
+  const groupCourse=/團班/.test(course)?course:'';
+  return [norm(x.weekday),start,compact(groupCourse),compact(normalizedStudent),compact(stripScheduleAnnotation(x.teacher))].join('|');
 }
 
 function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {}){
