@@ -1959,9 +1959,11 @@ function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
     const addMatch=rawText.match(/(\d{1,2})\/(\d{1,2})[^()（）]*?(?:補課|加課)/);
     if(addMatch){
       const d=parseDateFlexible(addMatch[1]+'/'+addMatch[2],year);
+      const addCourseMatch=rawText.match(/(?:\d{1,2})\/(?:\d{1,2})\s*([^()（）]*?)(?:補課|加課)/);
+      const oneOffCourse=str(addCourseMatch?.[1])||targetCourse;
       if(d)add({
         originalDate:'',originalTime:'',action:'補課',
-        newDate:d,newTime:fullRange,teacher:targetTeacher,course:targetCourse,note:rawText
+        newDate:d,newTime:fullRange,teacher:targetTeacher,course:oneOffCourse,note:rawText
       });
     }
   }
