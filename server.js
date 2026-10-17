@@ -1726,6 +1726,8 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
     redCancelled:parsed.redItems.length,
     unclassifiedCount:parsed.unclassifiedItems.length,
     teacherNotesCount:parsed.teacherNotes.length,
+    unavailableSlotsCount:parsed.unavailableSlots.length,
+    unavailableSlots:parsed.unavailableSlots,
     unclassifiedSamples:parsed.unclassifiedItems.slice(0,5).map(x=>({teacher:x.teacher,weekday:x.weekday,time:x.time,student:x.student,note:x.note})),
     teacherNotes:parsed.teacherNotes.slice(0,10),
     warnings:[
@@ -1740,6 +1742,44 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
 }
 
 
+
+
+function unavailableSlotWarnings(actualRows, unavailableSlots){
+  const rows=actualRows||[], slots=unavailableSlots||[];
+  if(!slots.length||!rows.length) return [];
+  const minutes=value=>{
+    const t=timeKey(value);
+    if(!t) return -1;
+    const [h,m]=t.split(':').map(Number);
+    return h*60+m;
+  };
+  const matches=new Map();
+  for(const row of rows){
+    const date=dateKey(row?.[1]), weekday=normalizeWeekday(row?.[2]);
+    const range=parseTimeRange(row?.[3]);
+    const start=range.start||timeKey(row?.[13])||timeKey(row?.[3]);
+    const end=range.end||timeKey(row?.[14]);
+    const teacher=compact(row?.[6]), student=str(row?.[4]);
+    if(!isValidDateKey(date)||!start||!end||!teacher) continue;
+    const startMinute=minutes(start),endMinute=minutes(end);
+    if(startMinute<0||endMinute<=startMinute) continue;
+    for(const slot of slots){
+      if(compact(slot.teacher)!==teacher||normalizeWeekday(slot.weekday)!==weekday) continue;
+      const blockStart=minutes(slot.start),blockEnd=minutes(slot.end);
+      if(blockStart<0||blockEnd<=blockStart) continue;
+      if(startMinute<blockEnd&&blockStart<endMinute){
+        const key=[teacher,date,start,end,slot.start,slot.end,compact(student)].join('|');
+        if(!matches.has(key)) matches.set(key,{teacher:str(row[6]),student,date,start,end,blockedStart:slot.start,blockedEnd:slot.end,sourceRow:slot.sourceRow});
+      }
+    }
+  }
+  if(!matches.size) return [];
+  const samples=Array.from(matches.values()).slice(0,8).map(x=>
+    x.teacher+'／'+x.student+' '+x.date+' '+x.start+'-'+x.end+
+    ' 與來源禁排時段 '+x.blockedStart+'-'+x.blockedEnd+' 重疊（來源列 '+x.sourceRow+'）'
+  );
+  return ['實際課程有 '+matches.size+' 筆與「無法排課／禁排」時段重疊；請檢查調課或固定課程。例：'+samples.join('；')];
+}
 
 function fixedDataQualityWarnings(rows, referenceDate=todayKey()){
   const hr=findHeaderRow(rows,['固定課表ID','星期','上課時間','學生','課程','老師','校區','有效迄日','啟用']);
@@ -2014,6 +2054,7 @@ async function build({fromDate=todayKey(),days=DEFAULT_DAYS}={}){
   const warnings=[
     ...(sourceSync.warnings||[]),
     ...fixedDataQualityWarnings(fixedRows,fromDate),
+    ...unavailableSlotWarnings(actual,sourceSync.unavailableSlots||[]),
     ...adjustmentConflictWarnings(adjusts),
     ...actualIntegrityWarnings(actual),
     ...missingRecipientWarnings(actual,contacts,settings),
@@ -2338,7 +2379,8 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
     const seenHeader=header.map(rawCellText).filter(Boolean).join('、');
     throw new Error('「開學課表」格式不符合目前預期：需要老師欄及星期欄位；目前讀到：'+(seenHeader||'空白標題列'));
   }
-  const fixed=[], adjustments=[], redItems=[], unclassifiedItems=[], durationRows=[], teacherNotes=[];
+  const fixed=[], adjustments=[], redItems=[], unclassifiedItems=[], durationRows=[], teacherNotes=[], unavailableSlots=[];
+
   for(let r=1;r<rows.length;r++){
     const row=rows[r]||[];
     const teacherCell=rawCellText(row[teacherCol]);
@@ -2348,6 +2390,18 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
     if(!teacher) continue;
     if(teacherNote) teacherNotes.push({teacher,note:teacherNote,sourceRow:r+1});
     for(const [col,weekday] of Object.entries(weekdayCols)){
+      const cellText=rawCellText(row[Number(col)]);
+      for(const rawLine of cellText.split(/\r?\n/).map(str).filter(Boolean)){
+        const line=rawLine.trim();
+        const timeMatch=line.match(/^(\d{1,2}:?\d{2})\s*[-~～至]\s*(\d{1,2}:?\d{2})\s*(.*)$/);
+        if(!timeMatch) continue;
+        const start=timeKey(timeMatch[1]), end=timeKey(timeMatch[2]), remainder=str(timeMatch[3]);
+        if(start&&end&&isUnavailableSlot(remainder)){
+          unavailableSlots.push({teacher,weekday,start,end,note:remainder,raw:line,sourceRow:r+1});
+        }else if(!start||!end||(!remainder&&!isUnavailableSlot(remainder))){
+          unclassifiedItems.push({teacher,weekday,time:(start||timeMatch[1])+(end?'-'+end:''),student:remainder,raw:line,colorStatus:'unknown',note:'[無法判讀的來源時段] 時間格式無效或缺少學生／狀態文字'});
+        }
+      }
       for(const item of parseRawCourseCell(row[Number(col)],teacher,weekday,dateReference,themeColors)){
         if(item.durationAdjustmentMinutes && ['black','yellow','purple'].includes(item.colorStatus)){
           durationRows.push(item);
@@ -2405,7 +2459,7 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
     }
   }
 
-  return {fixed,adjustments,redItems,unclassifiedItems,teacherNotes};
+  return {fixed,adjustments,redItems,unclassifiedItems,teacherNotes,unavailableSlots};
 }
 
 
@@ -2659,7 +2713,9 @@ async function buildSourcePreview(year = new Date().getFullYear()){
     fixed:fixed.slice(0,300),adjustments:adjustments.slice(0,300),
     redItems:parsed.redItems.slice(0,200),
     unclassifiedItems:parsed.unclassifiedItems.slice(0,200),
-    teacherNotes:parsed.teacherNotes.slice(0,100)
+    teacherNotes:parsed.teacherNotes.slice(0,100),
+    unavailableSlotsCount:parsed.unavailableSlots.length,
+    unavailableSlots:parsed.unavailableSlots.slice(0,200)
   };
 }
 
@@ -2677,6 +2733,6 @@ app.get('/preview-source',async(req,res)=>{
 
 
 if(require.main===module) app.listen(PORT,()=>console.log(`LINE Course Schedule Manager v1.2 listening on ${PORT}`));
-module.exports={app,isYes,isNo,isObsoleteImportedRow,parseDateFlexible,splitClassRoster,normalizeWeekday,dedupeRawFixedRows,dedupeSourceAdjustments,parseRawSchedule,assignPreviewAdjustmentIds,parseAdjust,parseInlineAdjustments,parseFixed,parseSettings,fixedDataQualityWarnings,buildRows,mergeActualRows,makeReminderRows,mergeReminderItems,actualObjects,adjustmentConflictWarnings,actualIntegrityWarnings,missingRecipientWarnings,notificationTemplateWarnings,shouldPreserveReminderConfirmation,missingReminderTimeWarnings,missingActualEndTimeWarnings,adminAuthorized};
+module.exports={app,isYes,isNo,isObsoleteImportedRow,parseDateFlexible,splitClassRoster,normalizeWeekday,dedupeRawFixedRows,dedupeSourceAdjustments,parseRawSchedule,assignPreviewAdjustmentIds,parseAdjust,parseInlineAdjustments,parseFixed,parseSettings,fixedDataQualityWarnings,unavailableSlotWarnings,buildRows,mergeActualRows,makeReminderRows,mergeReminderItems,actualObjects,adjustmentConflictWarnings,actualIntegrityWarnings,missingRecipientWarnings,notificationTemplateWarnings,shouldPreserveReminderConfirmation,missingReminderTimeWarnings,missingActualEndTimeWarnings,adminAuthorized};
 // Safety: do not build or write Google Sheets automatically at startup or on a timer.
 // Use the explicit /build endpoint only after reviewing the source preview.
