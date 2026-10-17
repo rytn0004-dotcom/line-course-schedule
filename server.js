@@ -2412,7 +2412,7 @@ async function buildSourcePreview(year = new Date().getFullYear()){
   const parsed=parseRawSchedule(rawRows,year,themeColors,previewReferenceDate);
   const fixed=matchRawFixedIds(parsed.fixed,fixedRows);
   const fixedIdByKey=new Map(fixed.map(x=>[rawFixedLogicalKey(x),x.id]));
-  const adjustments=assignPreviewAdjustmentIds(parsed.adjustments.map(x=>({
+  const mappedAdjustments=parsed.adjustments.map(x=>({
     ...x,
     fixedId:x.fixedId||fixedIdByKey.get([
       norm(x.weekday),
@@ -2420,7 +2420,9 @@ async function buildSourcePreview(year = new Date().getFullYear()){
       compact(stripScheduleAnnotation(x.student)),
       compact(stripScheduleAnnotation(x.teacher))
     ].join('|'))||''
-  })),adjustRows);
+  }));
+  const dedupedAdjustments=dedupeSourceAdjustments(mappedAdjustments);
+  const adjustments=assignPreviewAdjustmentIds(dedupedAdjustments.rows,adjustRows);
   const colorSummary={
     blackFixed:fixed.filter(x=>x.colorStatus==='black').length,
     yellowPending:fixed.filter(x=>x.colorStatus==='yellow').length,
@@ -2433,6 +2435,7 @@ async function buildSourcePreview(year = new Date().getFullYear()){
     sourceSpreadsheetId,
     writesPerformed:false,colorRulesApplied:true,year,colorSummary,
     fixedCount:fixed.length,adjustmentCount:adjustments.length,
+    duplicateAdjustmentsSuppressed:dedupedAdjustments.suppressed,
     redCount:parsed.redItems.length,unclassifiedCount:parsed.unclassifiedItems.length,
     fixed:fixed.slice(0,300),adjustments:adjustments.slice(0,300),
     redItems:parsed.redItems.slice(0,200),
