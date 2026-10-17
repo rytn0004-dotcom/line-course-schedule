@@ -1681,7 +1681,7 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
     if(!teacher) continue;
     for(const [col,weekday] of Object.entries(weekdayCols)){
       for(const item of parseRawCourseCell(row[Number(col)],teacher,weekday,year,themeColors)){
-        if(item.durationAdjustmentMinutes){
+        if(item.durationAdjustmentMinutes && ['black','yellow','purple'].includes(item.colorStatus)){
           durationRows.push(item);
           continue;
         }
@@ -1873,7 +1873,12 @@ async function buildSourcePreview(year = new Date().getFullYear()){
   const fixedIdByKey=new Map(fixed.map(x=>[rawFixedLogicalKey(x),x.id]));
   const adjustments=assignPreviewAdjustmentIds(parsed.adjustments.map(x=>({
     ...x,
-    fixedId:x.fixedId||fixedIdByKey.get(rawFixedLogicalKey(x))||''
+    fixedId:x.fixedId||fixedIdByKey.get([
+      norm(x.weekday),
+      parseTimeRange(x.originalTime).start||timeKey(x.originalTime),
+      compact(stripScheduleAnnotation(x.student)),
+      compact(stripScheduleAnnotation(x.teacher))
+    ].join('|'))||''
   })),adjustRows);
   const colorSummary={
     blackFixed:fixed.filter(x=>x.colorStatus==='black').length,
