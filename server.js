@@ -175,7 +175,7 @@ function weekdayLabel(dateStr){
 function compact(v){ return norm(v).replace(/[()（）\[\]【】]/g,''); }
 function studentShortAlias(value){
   const name=compact(value);
-  return /^[\\u4e00-\\u9fff]{3}$/.test(name)?name.slice(1):'';
+  return name.length===3&&name.split('').every(ch=>ch>='一'&&ch<='龥')?name.slice(1):'';
 }
 function includesStudent(related, student, allStudentNames=[]){
   const names=split(related).map(compact);
@@ -1020,6 +1020,7 @@ function reminderGroupId(item){
 
 function makeReminderRows(actual, contacts, templates, settings, fixedTemplateById){
   const raw=[];
+  if(!isYes(settings.enabled)) return raw;
   const allStudentNames=Array.from(new Set(actual.flatMap(item=>{
     const roster=splitClassRoster(item.student);
     return normalizeMemberList(roster.course?roster.students:item.student);
