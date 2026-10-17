@@ -366,6 +366,48 @@ test('purple single-course adjustment keeps its end time and does not raise a fa
 
 
 
+
+test('annotation-based one-day +30-minute extension keeps the weekly base and adjusts only its date', () => {
+  const parsed = parseRawSchedule([
+    ['老師', '星期四'],
+    ['程映真', { value: '1830-2000子淇\n1830-2000子淇(10/8加30分)' }]
+  ], 2026, {}, '2026-10-17');
+  assert.equal(parsed.fixed.filter(x => x.student === '子淇').length, 1);
+  const ext = parsed.adjustments.find(x => x.action === '延長時間' && x.student === '子淇');
+  assert.ok(ext);
+  assert.equal(ext.newDate, '2026-10-08');
+  assert.equal(ext.newEndTime, '20:30');
+  const rows = buildRows(parsed.fixed, [ext], '2026-10-08', 1);
+  assert.equal(rows.find(x => x[4] === '子淇')[3], '18:30-20:30');
+  assert.equal(rows.find(x => x[4] === '子淇')[11], '已加時30分鐘');
+});
+
+test('multi-date extension applies only to target dates following 調 and not unrelated dates in the note', () => {
+  const parsed = parseRawSchedule([
+    ['老師', '星期一'],
+    ['林維軒', { value: '2000-2130芯瑜\n2000-2200芯瑜(9/28p調9/21、10/5、10/12各+30min，除了9/14、9/21、10/5、10/12外都看上面)' }]
+  ], 2026, {}, '2026-10-17');
+  const rules = parsed.adjustments.filter(x => x.action === '延長時間' && x.student === '芯瑜');
+  assert.deepEqual(rules.map(x => x.newDate).sort(), ['2026-09-21','2026-10-05','2026-10-12'].sort());
+  assert.ok(rules.every(x => x.newEndTime === '22:00'));
+  assert.equal(parsed.fixed.filter(x => x.student === '芯瑜').length, 1);
+});
+
+test('one-time moved lesson with +45min becomes a single extended make-up instead of a weekly fixed row', () => {
+  const parsed = parseRawSchedule([
+    ['老師', '星期二'],
+    ['黃政銓', { value: '1800-1845翊森(9/30師p調10/13b+45min)' }]
+  ], 2026, {}, '2026-10-17');
+  assert.equal(parsed.fixed.filter(x => x.student === '翊森').length, 0);
+  const makeUp = parsed.adjustments.find(x => x.student === '翊森' && x.newDate === '2026-10-13');
+  assert.ok(makeUp);
+  assert.equal(makeUp.action, '補課');
+  assert.equal(makeUp.newTime, '18:00-19:30');
+  assert.equal(makeUp.newEndTime, '19:30');
+  const rows = buildRows([], [makeUp], '2026-10-13', 1);
+  assert.equal(rows.find(x => x[4] === '翊森')[3], '18:00-19:30');
+});
+
 test('one-day subject-change annotation overrides only that date course', () => {
   const parsed = parseRawSchedule([
     ['老師', '星期四'],
