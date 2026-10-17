@@ -11,7 +11,7 @@ process.env.SCHEDULE_ADMIN_TOKEN = 'test-token';
 
 const {
   isYes, isObsoleteImportedRow, parseDateFlexible, splitClassRoster, buildRows, mergeActualRows,
-  parseRawSchedule, dedupeRawFixedRows, dedupeSourceAdjustments, assignPreviewAdjustmentIds, parseAdjust, parseInlineAdjustments, parseFixed, parseSettings, actualObjects, makeReminderRows, mergeReminderItems, adjustmentConflictWarnings, actualIntegrityWarnings, missingRecipientWarnings, notificationTemplateWarnings, shouldPreserveReminderConfirmation, missingActualEndTimeWarnings
+  parseRawSchedule, dedupeRawFixedRows, dedupeSourceAdjustments, assignPreviewAdjustmentIds, parseAdjust, parseInlineAdjustments, parseFixed, parseSettings, normalizeWeekday, fixedDataQualityWarnings, actualObjects, makeReminderRows, mergeReminderItems, adjustmentConflictWarnings, actualIntegrityWarnings, missingRecipientWarnings, notificationTemplateWarnings, shouldPreserveReminderConfirmation, missingActualEndTimeWarnings
 } = require('../server');
 
 const weekday = '一';
@@ -478,6 +478,33 @@ test('identical source fixed courses are deduplicated but distinct end-time conf
   const conflict = dedupeRawFixedRows([base, { ...base, endTime: '13:00' }]);
   assert.equal(conflict.conflicts.length, 1);
   assert.equal(conflict.suppressed, 0);
+});
+
+
+test('weekday values are normalized from Chinese labels, week labels, and digits', () => {
+  assert.equal(normalizeWeekday('星期六'), '六');
+  assert.equal(normalizeWeekday('週五'), '五');
+  assert.equal(normalizeWeekday('6'), '六');
+  const rows = [
+    ['固定課表ID','星期','上課時間','學生','課程','老師','校區','有效迄日','啟用','備註','通知模板'],
+    ['FS-WD','星期六','11:00-12:30','尚哲','理化','鄭雅方','校區甲','','是','','']
+  ];
+  const parsed = parseFixed(rows,'2026-10-17');
+  assert.equal(parsed.length,1);
+  assert.equal(parsed[0].weekday,'六');
+});
+
+test('fixed-course quality checks flag invalid enabled values, time, and expiry date', () => {
+  const rows = [
+    ['固定課表ID','星期','上課時間','學生','課程','老師','校區','有效迄日','啟用','備註','通知模板'],
+    ['FS-BAD-ENABLED','一','18:00-19:00','甲','理化','老師甲','校區甲','','maybe','',''],
+    ['FS-BAD-TIME','三','25:00-26:00','乙','數學','老師乙','校區甲','','是','',''],
+    ['FS-BAD-UNTIL','五','18:00-19:00','丙','英文','老師丙','校區甲','2026-02-31','是','','']
+  ];
+  const warnings = fixedDataQualityWarnings(rows,'2026-10-17');
+  assert.ok(warnings.some(w => /啟用.*不是明確/.test(w)));
+  assert.ok(warnings.some(w => /開始時間無法判讀/.test(w)));
+  assert.ok(warnings.some(w => /有效迄日無法判讀/.test(w)));
 });
 
 test('source adjustment dedupe removes only fully identical normalized rules', () => {
