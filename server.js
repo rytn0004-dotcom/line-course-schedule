@@ -1920,17 +1920,37 @@ function missingReminderTimeWarnings(actualRows, contacts, settings){
 async function build({fromDate=todayKey(),days=DEFAULT_DAYS}={}){
   if(!isValidDateKey(fromDate)) throw new Error('fromDate 必須是有效的 YYYY-MM-DD 日期');
   if(!Number.isInteger(days)||days<1||days>180) throw new Error('days 必須是 1 到 180 的整數');
-  // 提前驗證關鍵提醒設定，避免系統設定欄位出錯時先同步固定課表／調課資料。
-  const preflightSettings=await retry('preflight system settings',()=>sheets.spreadsheets.values.get({
-    spreadsheetId:SHEET_ID,range:qsheet('系統設定')+'!A:Z'
-  }));
-  parseSettings(preflightSettings.data.values||[]);
-  const sourceSync=await syncSourceIntoSchedule(fromDate);
+  // 先驗證各工作表結構，避免聯絡人／實際課程／提醒欄位錯誤時先寫入來源課表。
   await ensureSheet('課程提醒');
   await ensureSheetHeaders('課程校正',CORRECTION_HEADERS);
-  const [settingsRows,fixedRows,adjustRows,correctionRows,oldActualRows,contactRows,templateRows,reminderRows] = await readSheets();
+  const [settingsRows,initialFixedRows,initialAdjustRows,correctionRows,oldActualRows,contactRows,templateRows,reminderRows] = await readSheets();
   const settings=parseSettings(settingsRows);
-  const fixed=parseFixed(fixedRows,fromDate); const adjusts=[...parseAdjust(adjustRows,correctionRows,fromDate),...parseInlineAdjustments(fixed,fromDate)]; const contacts=parseContacts(contactRows); const templates=parseTemplates(templateRows);
+  parseFixed(initialFixedRows,fromDate);
+  const contacts=parseContacts(contactRows);
+  const requiredAdjustHeaders=['調課ID','原固定課表ID','原日期','原時間','動作','新日期','新時間','學生','新課程','新老師','新校區','確認','備註'];
+  if(findHeaderRow(initialAdjustRows,requiredAdjustHeaders)<0) throw new Error('調課課程缺少必要欄位；已在來源同步前中止，沒有寫入課表。');
+  const requiredActualHeaders=['Course ID','課程日期','星期','上課時間','學生','課程','老師','校區','來源','固定課表ID','調課ID','調課結果','備註'];
+  if(findHeaderRow(oldActualRows,requiredActualHeaders)<0) throw new Error('實際課程缺少必要標題列；已在來源同步前中止，沒有寫入課表。');
+  const reminderPreflight=parseReminderRows(reminderRows);
+  const reminderHasData=reminderRows.some(row=>Array.isArray(row)&&row.some(value=>str(value)!==''));
+  if(reminderPreflight.headerRow<0&&reminderHasData) throw new Error('課程提醒已有資料但找不到標準標題列；已在來源同步前中止。');
+  if(reminderPreflight.headerRow>=0){
+    const existingReminderHeaderMap=hmap(reminderPreflight.headers||[]);
+    const missingReminderHeaders=REMINDER_HEADERS.filter(name=>existingReminderHeaderMap[name]===undefined);
+    if(missingReminderHeaders.length) throw new Error('課程提醒缺少必要欄位：'+missingReminderHeaders.join('、')+'；已在來源同步前中止。');
+  }
+  const templates=parseTemplates(templateRows);
+  const sourceSync=await syncSourceIntoSchedule(fromDate);
+  const refreshedSchedule=await retry('refresh fixed and adjustment rows after source sync',()=>sheets.spreadsheets.values.batchGet({
+    spreadsheetId:SHEET_ID,
+    ranges:[qsheet('固定課表')+'!A:K',qsheet('調課課程')+'!A:M'],
+    majorDimension:'ROWS'
+  }));
+  const refreshedRanges=refreshedSchedule.data.valueRanges||[];
+  const fixedRows=(refreshedRanges[0]&&refreshedRanges[0].values)||[];
+  const adjustRows=(refreshedRanges[1]&&refreshedRanges[1].values)||[];
+  const fixed=parseFixed(fixedRows,fromDate);
+  const adjusts=[...parseAdjust(adjustRows,correctionRows,fromDate),...parseInlineAdjustments(fixed,fromDate)];
   const fixedTemplateByIdInput=fixed;
   const actual=buildRows(fixed,adjusts,fromDate,days);
 
