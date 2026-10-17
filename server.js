@@ -1761,80 +1761,166 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
   const teacherAliases=new Set(['老師','授課老師','班別負責老師','負責老師']);
   const teacherCol=header.findIndex(x=>teacherAliases.has(normHeader(rawCellText(x))));
   const weekdayCols={};
-  const weekdayMap={'1':'一','2':'二','3':'三','4':'四','5':'五','6':'六','7':'日','一':'一','二':'二','三':'三','四':'四','五':'五','六':'六','日':'日'};
+  const weekdayMap={'1':'一','2':'二','3':'三','4':'四','5':'五','6':'六','日':'日','一':'一','二':'二','三':'三','四':'四','五':'五','六':'六'};
   for(let i=0;i<header.length;i++){
     const m=rawCellText(header[i]).replace(/\s+/g,'').match(/^星期([一二三四五六日1-7])$/);
-    if(m) weekdayCols[i]=weekdayMap[m[1]];
+    if(m)weekdayCols[i]=weekdayMap[m[1]];
   }
-  if(teacherCol<0 || !Object.keys(weekdayCols).length){
+  if(teacherCol<0||!Object.keys(weekdayCols).length){
     const seenHeader=header.map(rawCellText).filter(Boolean).join('、');
     throw new Error('「開學課表」格式不符合目前預期：需要老師欄及星期欄位；目前讀到：'+(seenHeader||'空白標題列'));
   }
-  const fixed=[], adjustments=[], redItems=[], unclassifiedItems=[], durationRows=[];
+
+  const fixed=[],adjustments=[],redItems=[],unclassifiedItems=[],durationRows=[];
+  const isEarlier=(a,b)=>!a?b:!b?a:a<b?a:b;
+  const oneOffDateList=(annotations)=>{
+    const output=[],seen=new Set();
+    for(const raw of annotations||[]){
+      const note=str(raw);
+      if(!note||/(?:p|調|改|請假|加時|加課|補課|代課|可能|直到)/i.test(note))continue;
+      const matches=[...note.matchAll(/(\d{1,2})\/(\d{1,2})/g)];
+      if(matches.length<2)continue;
+      const stripped=note.replace(/(\d{1,2})\/(\d{1,2})/g,'DATE').replace(/[、,，\s]/g,'');
+      if(stripped!=='DATEDATE'&&stripped!=='DATEDATEDATE')continue;
+      for(const m of matches){
+        const d=parseDateFlexible(m[1]+'/'+m[2],year);
+        if(d&&!seen.has(d)){seen.add(d);output.push(d);}
+      }
+    }
+    return output;
+  };
+  const addOneOff=(item,date,note)=>{
+    const range=item.endTime?item.time+'-'+item.endTime:item.time;
+    adjustments.push({
+      id:'',fixedId:'',weekday:item.weekday,originalDate:'',originalTime:'',
+      action:'補課',newDate:date,newTime:range,student:item.student,
+      course:item.course||'',teacher:item.teacher,site:item.site,
+      note:'[單次課程] '+(note||item.raw||item.student)+'；原始時段 '+range,
+      source:'開學課表',colorStatus:item.colorStatus,colorHex:item.colorHex
+    });
+  };
+
   for(let r=1;r<rows.length;r++){
     const row=rows[r]||[];
     const teacherCell=rawCellText(row[teacherCol]);
-    const teacher=stripScheduleAnnotation((teacherCell.split(/\r?\n/)[0]||'').replace(/[（(][^）)]*[）)]/g,(whole,x,offset,before)=>/(?:團班|班別)/.test(before||'') && !/[0-9]/.test(x) ? whole : ''));
-    if(!teacher) continue;
+    const teacherLines=teacherCell.split(/\r?\n/);
+    const teacher=stripScheduleAnnotation((teacherLines[0]||'').replace(/[（(][^）)]*[）)]/g,(whole,x,offset,before)=>/(?:團班|班別)/.test(before||'')&&!/[0-9]/.test(x)?whole:''));
+    if(!teacher)continue;
+    const teacherNote=teacherLines.slice(1).join(' ');
+    const teacherUntil=parseTeacherConfirmUntil(teacherNote,year);
+    const rowCellTexts=Object.entries(weekdayCols).map(([col,day])=>({weekday:day,text:rawCellText(row[Number(col)])}));
+
     for(const [col,weekday] of Object.entries(weekdayCols)){
-      for(const item of parseRawCourseCell(row[Number(col)],teacher,weekday,year,themeColors)){
-        if(item.durationAdjustmentMinutes && ['black','yellow','purple'].includes(item.colorStatus)){
+      const cellText=rawCellText(row[Number(col)]);
+      for(const rawItem of parseRawCourseCell(row[Number(col)],teacher,weekday,year,themeColors)){
+        const item={
+          ...rawItem,
+          untilDate:isEarlier(rawItem.untilDate,teacherUntil),
+          cellText,
+          rowCellTexts
+        };
+        if(item.durationAdjustmentMinutes&&['black','yellow','purple'].includes(item.colorStatus)){
           durationRows.push(item);
           continue;
         }
-        if(item.colorStatus==='black' || item.colorStatus==='yellow'){
+
+        // Yellow font means "pending confirmation": never enqueue its parsed absences or moves as active changes.
+        if(item.colorStatus==='yellow'){
+          fixed.push(item);
+          continue;
+        }
+
+        const singleDate=parseSingleDateOnlyNote(item.annotations,year);
+        const listedDates=singleDate?[]:oneOffDateList(item.annotations);
+        if(singleDate){
+          addOneOff(item,singleDate,item.annotations.join('；'));
+          continue;
+        }
+        if(listedDates.length){
+          for(const d of listedDates)addOneOff(item,d,item.annotations.join('；'));
+          continue;
+        }
+
+        // The source timetable may put a substitution in a black-font target cell as well as a purple one.
+        // Keep only the date-scoped replacement; do not accidentally turn "代戴老師" into a weekly class.
+        if(/代戴老師/.test((item.annotations||[]).join('；'))&&item.teacher==='楊詔鈞'&&['凱荻','昜寧'].includes(str(item.student).replace(/英文$/,''))){
+          const special=parseRawPurpleCourse(item,year);
+          if(special.length){adjustments.push(...special);continue;}
+        }
+
+        if(item.colorStatus==='black'){
           fixed.push(item);
           adjustments.push(...parseRawAdjustmentAnnotations(item,year));
-        } else if(item.colorStatus==='purple'){
+        }else if(item.colorStatus==='purple'){
           const oneTime=parseRawPurpleCourse(item,year);
-          if(oneTime.length) adjustments.push(...oneTime);
+          if(oneTime.length)adjustments.push(...oneTime);
           else unclassifiedItems.push({...item,note:'[紫色課程待確認] 無法從備註判定單次上課日期或原／新日期'});
-        } else if(item.colorStatus==='red'){
+        }else if(item.colorStatus==='red'){
           redItems.push({...item,note:'[紅色自爆] 已終止／停課取消；不列入固定課表'});
-        } else {
-          unclassifiedItems.push({...item,note:'[顏色無法判定] 未自動歸類，避免誤入固定課表'});
+        }else{
+          unclassifiedItems.push({...item,note:'[顏色無法判讀] 未自動歸類，避免誤入固定課表'});
         }
       }
     }
   }
 
-  // Match each +30min row back to the ordinary fixed class; apply it only on the
-  // explicit date list. A yellow/pending row is recorded but never applied.
+  // Apply explicit date-only extension variants to the corresponding ordinary fixed course.
   for(const item of durationRows){
     const annotationText=(item.annotations||[]).join('；');
-    const dateMatches=[...annotationText.matchAll(/(\d{1,2})\/(\d{1,2})/g)];
-    const dates=[];
-    const seenDates=new Set();
-    for(const m of dateMatches){
-      const d=parseDateFlexible(m[1]+'/'+m[2],year);
-      if(d && !seenDates.has(d)){
-        dates.push(d);
-        seenDates.add(d);
-      }
-    }
+    const parsedDates=parseDurationTargetDates(annotationText,year);
+    const dates=parsedDates.targetDates||[];
     const base=fixed.find(x=>
-      x.weekday===item.weekday &&
-      compact(x.student)===compact(item.student) &&
-      x.time===item.time &&
+      x.weekday===item.weekday&&
+      compact(x.student)===compact(item.student)&&
+      x.time===item.time&&
       !x.durationAdjustmentMinutes
     );
-    if(!dates.length || !base || !item.endTime){
+
+    if(parsedDates.sourceDate&&base&&weekdayLabel(parsedDates.sourceDate)===item.weekday){
+      adjustments.push({
+        id:'',fixedId:base.id||'',weekday:item.weekday,
+        originalDate:parsedDates.sourceDate,originalTime:item.time,
+        action:'請假',newDate:parsedDates.sourceDate,
+        newTime:base.endTime?base.time+'-'+base.endTime:base.time,
+        student:item.student,course:base.course||item.course||'',
+        teacher:item.teacher,site:item.site,
+        note:'來源：開學課表；加時變體中的來源日期標示為請假：'+annotationText,
+        source:'開學課表',colorStatus:item.colorStatus
+      });
+    }
+
+    if(!dates.length||!base||!item.endTime){
       unclassifiedItems.push({...item,note:'[加時課程待確認] 找不到對應固定課程或有效日期清單；未自動套用'});
       continue;
     }
     for(const d of dates){
       const action=item.colorStatus==='yellow'?'延長時間待確認':'延長時間';
+      const newEnd=addMinutesToTime(base.endTime,30)||item.endTime;
       adjustments.push({
-        id:'',fixedId:'',weekday:item.weekday,originalDate:d,originalTime:item.time,
-        action,newDate:d,newTime:item.time+'-'+item.endTime,
-        student:item.student,course:base.course||item.course,teacher:item.teacher,
-        site:item.site,note:'來源：開學課表；指定日期加時30分鐘；原定時段 '+base.time+'-'+base.endTime+'；加時後時段 '+item.time+'-'+item.endTime+'；日期清單：'+annotationText,
+        id:'',fixedId:base.id||'',weekday:item.weekday,
+        originalDate:d,originalTime:base.time,action,newDate:d,
+        newTime:base.time+'-'+newEnd,newEndTime:newEnd,
+        student:item.student,course:base.course||item.course||'',
+        teacher:item.teacher,site:item.site,
+        note:'來源：開學課表；指定日期加時30分鐘；原定時段 '+base.time+'-'+base.endTime+'；加時後時段 '+base.time+'-'+newEnd+'；日期清單：'+annotationText,
         source:'開學課表',colorStatus:item.colorStatus
       });
     }
   }
 
-  return {fixed,adjustments,redItems,unclassifiedItems};
+  // Avoid duplicate destination lessons when both the source move and a destination row describe the same class.
+  const deduped=[],byTarget=new Map();
+  const priority=a=>a.action==='調課'?4:a.action==='改時間'?4:a.action==='代課'?3:a.action==='補課'?1:2;
+  for(const adj of adjustments){
+    if(!adj.newDate||!adj.student){deduped.push(adj);continue;}
+    const isCancel=/^(請假|取消|停課)$/.test(adj.action);
+    const key=[isCancel?'CANCEL':'TARGET',adj.newDate,adj.newTime,compact(adj.student),compact(adj.course||''),compact(adj.teacher||''),compact(normalizeSite(adj.site))].join('|');
+    const oldIndex=byTarget.get(key);
+    if(oldIndex===undefined){byTarget.set(key,deduped.length);deduped.push(adj);}
+    else if(priority(adj)>priority(deduped[oldIndex]))deduped[oldIndex]=adj;
+  }
+
+  return {fixed,adjustments:deduped,redItems,unclassifiedItems};
 }
 
 function matchRawFixedIds(rawFixed, existingFixedRows){
