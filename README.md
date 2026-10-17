@@ -1,5 +1,7 @@
 # LINE Course Schedule Manager v1.2.1
 
+> **唯一正式課表建置邏輯：** 本服務由 `server.js` 提供，Render 使用 `node server.js` 啟動，透過 `/build` 更新實際課程與提醒佇列。舊版獨立腳本 `schedule_builder.js` 已移除，因其欄位結構、確認狀態與調課判斷和現行服務不一致；請勿另行執行舊版建置邏輯。
+
 用途：整理課程資料，將「固定課表 + 調課課程」整理成「實際課程」，並依既定規則準備「課程提醒」佇列寫入 Google Sheet。
 
 ## 與 lineme-service 的明確分工
