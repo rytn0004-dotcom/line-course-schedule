@@ -27,6 +27,19 @@ function splitWrappedCourseLines(value) {
   return lines;
 }
 
+function sourceTeacherCourseOverride(value){
+  const source=String(value??'');
+  const aliases=[
+    {patterns:[/詔鈞代/,/代詔鈞/,/詔鈞(?=(?:國文|數學|理化|物理|化學|英文|生物|自然|社會))/],teacher:'楊詔鈞'},
+    {patterns:[/佳盈代/,/代佳盈/,/佳盈(?=(?:國文|數學|理化|物理|化學|英文|生物|自然|社會))/],teacher:'吳佳盈'},
+    {patterns:[/維軒代/,/代維軒/,/維軒(?=(?:國文|數學|理化|物理|化學|英文|生物|自然|社會))/],teacher:'林維軒'},
+    {patterns:[/政銓代/,/代政銓/,/政銓(?=(?:國文|數學|理化|物理|化學|英文|生物|自然|社會))/],teacher:'黃政銓'}
+  ];
+  const found=aliases.find(x=>x.patterns.some(re=>re.test(source)));
+  const courseMatch=source.match(/(?:詔鈞|佳盈|維軒|政銓)\s*(國文|數學|理化|物理|化學|英文|生物|自然|社會)/);
+  return {teacher:found?.teacher||'',course:courseMatch?String(courseMatch[1]).trim():''};
+}
+
 function isValidDateKey(value) {
   const m = String(value ?? '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!m) return false;
@@ -175,6 +188,7 @@ function extractReminderStudentNames(value) {
 }
 
 module.exports = {
+  sourceTeacherCourseOverride,
   splitWrappedCourseLines,
   addMinutesToTime,
   extractReminderStudentNames,
