@@ -2287,7 +2287,7 @@ function assignPreviewAdjustmentIds(adjustments, existingAdjustRows){
     }
   }
   let max=0;
-  for(const x of existing){ const m=x.id.match(/^ADJ(\\d+)$/i); if(m) max=Math.max(max,Number(m[1])); }
+  for(const x of existing){ const m=x.id.match(/^ADJ(\d+)$/i); if(m) max=Math.max(max,Number(m[1])); }
   const keyOf=sourceAdjustmentSignature;
   const byKey=new Map();
   for(const x of existing){
