@@ -924,7 +924,14 @@ function mergeActualRows(rows, previousRows, fromDate, toDate, headerRowIndex=1)
   const preserved=previous.filter(row=>!inWindow(row)).map(normalizeRow);
   const replacements=(rows||[]).map(normalizeRow);
   const merged=[...preserved,...replacements];
-  merged.sort((a,b)=>dateKey(a[1]).localeCompare(dateKey(b[1]))||str(a[3]).localeCompare(str(b[3]))||str(a[4]).localeCompare(str(b[4])));
+  const sortStart=row=>timeKey(row[13])||parseTimeRange(row[3]).start||timeKey(row[3])||'99:99';
+  merged.sort((a,b)=>
+    dateKey(a[1]).localeCompare(dateKey(b[1]))||
+    sortStart(a).localeCompare(sortStart(b))||
+    str(a[4]).localeCompare(str(b[4]))||
+    str(a[5]).localeCompare(str(b[5]))||
+    str(a[6]).localeCompare(str(b[6]))
+  );
   return {merged,previousDataCount:previous.length};
 }
 async function writeActual(rows, previousRows=[], fromDate=todayKey(), toDate=fromDate){
@@ -1696,6 +1703,70 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
   };
 }
 
+
+function adjustmentConflictWarnings(adjustments){
+  const groups=new Map();
+  for(const a of adjustments||[]){
+    if(!a.originalDate||!a.originalTime||!str(a.student)) continue;
+    const key=[a.originalDate,compact(a.student),timeKey(a.originalTime)||str(a.originalTime)].join('|');
+    if(!groups.has(key)) groups.set(key,[]);
+    groups.get(key).push(a);
+  }
+  const warnings=[];
+  for(const [key,group] of groups){
+    if(group.length<2) continue;
+    const signatures=new Set(group.map(a=>[
+      norm(a.action),a.newDate||'',timeKey(a.newTime)||str(a.newTime),
+      timeKey(a.newEndTime)||str(a.newEndTime),compact(a.course),compact(a.teacher),compact(a.site)
+    ].join('|')));
+    if(signatures.size<2) continue;
+    const [date,student,time]=key.split('|');
+    const ids=group.map(x=>str(x.id)||'(無 ID)').slice(0,4).join('、');
+    warnings.push('同一課程有 '+signatures.size+' 種不同調整：'+student+' '+date+' '+time+'；程式依既有優先序選擇一筆，其餘請人工核對。調課ID：'+ids);
+  }
+  return warnings.slice(0,20);
+}
+
+function actualIntegrityWarnings(actualRows){
+  const rows=actualRows||[];
+  const seen=new Map();
+  const duplicateSamples=[];
+  const invalidDateSamples=[];
+  const invalidTimeSamples=[];
+  const inconsistentTimeSamples=[];
+  const minutes=value=>{
+    const t=timeKey(value);
+    if(!t) return -1;
+    const [h,m]=t.split(':').map(Number);
+    return h*60+m;
+  };
+  for(const row of rows){
+    const date=dateKey(row?.[1]);
+    const range=parseTimeRange(row?.[3]);
+    const start=timeKey(row?.[13])||range.start||timeKey(row?.[3]);
+    const end=timeKey(row?.[14])||range.end;
+    const student=str(row?.[4]), course=str(row?.[5]), teacher=str(row?.[6]), site=normalizeSite(row?.[7]);
+    const label=[student,date,str(row?.[3]),course,teacher].filter(Boolean).join(' / ');
+    if(!isValidDateKey(date)) invalidDateSamples.push(label||'(空白課程)');
+    if(!start) invalidTimeSamples.push(label||'(空白課程)');
+    if(start&&end&&minutes(end)<=minutes(start)) invalidTimeSamples.push(label+'（下課時間不晚於上課時間）');
+    if(range.start&&start&&range.start!==start) inconsistentTimeSamples.push(label+'（上課時間欄與出勤開始時間不同）');
+    if(range.end&&end&&range.end!==end) inconsistentTimeSamples.push(label+'（上課時間欄與出勤下課時間不同）');
+    const key=[date,start,end,compact(student),compact(course),compact(teacher),compact(site)].join('|');
+    if(date&&start&&student){
+      if(seen.has(key)){
+        if(duplicateSamples.length<5) duplicateSamples.push(label);
+      }else seen.set(key,label);
+    }
+  }
+  const warnings=[];
+  if(duplicateSamples.length) warnings.push('實際課程疑似存在重複列（同日期、時段、學生、課程、老師、校區）：'+duplicateSamples.join('；'));
+  if(invalidDateSamples.length) warnings.push('實際課程有 '+invalidDateSamples.length+' 筆日期無法判讀；例：'+invalidDateSamples.slice(0,3).join('；'));
+  if(invalidTimeSamples.length) warnings.push('實際課程有 '+invalidTimeSamples.length+' 筆開始時間無效或上下課區間不合理；例：'+invalidTimeSamples.slice(0,3).join('；'));
+  if(inconsistentTimeSamples.length) warnings.push('實際課程的「上課時間」與 N/O 出勤時間欄有 '+inconsistentTimeSamples.length+' 筆不一致；例：'+inconsistentTimeSamples.slice(0,3).join('；'));
+  return warnings;
+}
+
 function missingActualEndTimeWarnings(actualRows){
   const missing=(actualRows||[]).filter(row=>{
     const range=parseTimeRange(row[3]);
@@ -1759,7 +1830,13 @@ async function build({fromDate=todayKey(),days=DEFAULT_DAYS}={}){
     actualMatches:diagActual.map(x=>({courseId:x.courseId,date:x.date,weekday:x.weekday,time:x.time,student:x.student,course:x.course,teacher:x.teacher,site:x.site,source:x.source,fixedId:x.fixedId,adjustId:x.adjustId,adjustResult:x.adjustResult,note:x.note}))
   });
   const toDate=addDays(fromDate,days-1);
-  const warnings=[...missingReminderTimeWarnings(actual,contacts,settings),...missingActualEndTimeWarnings(actual)];
+  const warnings=[
+    ...(sourceSync.warnings||[]),
+    ...adjustmentConflictWarnings(adjusts),
+    ...actualIntegrityWarnings(actual),
+    ...missingReminderTimeWarnings(actual,contacts,settings),
+    ...missingActualEndTimeWarnings(actual)
+  ];
   await writeActual(actual,oldActualRows,fromDate,toDate);
   const reminder=AUTO_CREATE_REMINDERS
     ? await syncReminders(actual,reminderRows,contacts,templates,settings,fromDate,days,fixedTemplateByIdInput)
@@ -2332,6 +2409,6 @@ app.get('/preview-source',async(req,res)=>{
 
 
 if(require.main===module) app.listen(PORT,()=>console.log(`LINE Course Schedule Manager v1.2 listening on ${PORT}`));
-module.exports={app,isYes,isNo,isObsoleteImportedRow,parseDateFlexible,splitClassRoster,normalizeMemberList,parseRawSchedule,assignPreviewAdjustmentIds,parseAdjust,parseInlineAdjustments,parseFixed,parseSettings,buildRows,mergeActualRows,makeReminderRows,mergeReminderItems,actualObjects,missingReminderTimeWarnings,missingActualEndTimeWarnings,adminAuthorized};
+module.exports={app,isYes,isNo,isObsoleteImportedRow,parseDateFlexible,splitClassRoster,normalizeMemberList,parseRawSchedule,assignPreviewAdjustmentIds,parseAdjust,parseInlineAdjustments,parseFixed,parseSettings,buildRows,mergeActualRows,makeReminderRows,mergeReminderItems,actualObjects,adjustmentConflictWarnings,actualIntegrityWarnings,missingReminderTimeWarnings,missingActualEndTimeWarnings,adminAuthorized};
 // Safety: do not build or write Google Sheets automatically at startup or on a timer.
 // Use the explicit /build endpoint only after reviewing the source preview.
