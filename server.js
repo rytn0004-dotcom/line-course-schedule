@@ -2247,10 +2247,12 @@ function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
         out.push({id:'',fixedId:'',weekday:item.weekday,colorStatus:item.colorStatus,colorHex:item.colorHex,originalDate:d,originalTime:item.time,action:'請假',newDate:d,newTime:item.time,student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note,source:'開學課表'});
       }
     }
-    const addRe=/(\d{1,2})\/(\d{1,2})[^0-9]*?(?:補課|加課)/g;
-    while((m=addRe.exec(text))){
+    const addRe=/(\d{1,2})\/(\d{1,2})\s*([^()（）]*?)\s*(補課|加課)/g;
+    while((m=addRe.exec(rawText))){
       const d=parseDateFlexible(m[1]+'/'+m[2],year);
-      if(d) out.push({id:'',fixedId:'',weekday:item.weekday,colorStatus:item.colorStatus,colorHex:item.colorHex,originalDate:'',originalTime:'',action:'補課',newDate:d,newTime:item.time,newEndTime:item.endTime||'',student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note,source:'開學課表'});
+      const courseHint=str(m[3]).replace(/^[pb]+|[pb]+$/ig,'').trim();
+      const action=str(m[4])==='加課'?'加課':'補課';
+      if(d) out.push({id:'',fixedId:'',weekday:item.weekday,colorStatus:item.colorStatus,colorHex:item.colorHex,originalDate:'',originalTime:'',action,newDate:d,newTime:item.time,newEndTime:item.endTime||'',student:item.student,course:item.course||courseHint,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note,source:'開學課表'});
     }
   }
   return out;
