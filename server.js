@@ -703,6 +703,33 @@ function buildRows(fixed, adjusts, fromDate, days){
     }
   }
 
+  // If the source date is already outside the build window but its destination is still future,
+  // materialize the move directly on the target date. Otherwise the source-date loop below cannot see it.
+  for(const a of adjusts){
+    if(!a.originalDate||!a.newDate||a.newDate===a.originalDate)continue;
+    if(!/調課|移課|改課|代課/.test(norm(a.action)))continue;
+    if(a.newDate<fromDate||a.newDate>toDate)continue;
+    if(a.originalDate>=fromDate&&a.originalDate<=toDate)continue;
+    if(/請假|取消|停課/.test(a.action))continue;
+    const sourceWeekday=weekdayLabel(a.originalDate);
+    const fb=(a.fixedId&&fixed.find(x=>x.id===a.fixedId))||
+      fixed.find(x=>compact(x.student)===compact(a.student)&&
+        x.weekday===sourceWeekday&&
+        x.time===(parseTimeRange(a.originalTime).start||timeKey(a.originalTime)));
+    const student=a.student||fb?.student||'';
+    if(!student)continue;
+    const fallbackTime=fb?(fb.endTime?fb.time+'-'+fb.endTime:fb.time):'';
+    out.push({
+      date:a.newDate,weekday:weekdayLabel(a.newDate),time:a.newTime||fallbackTime,
+      student,course:a.course||fb?.course||'',teacher:a.teacher||fb?.teacher||'',
+      site:a.site||fb?.site||'',source:a.source||'調課課程',
+      fixedId:fb?.id||a.fixedId||'',
+      adjustId:a.id||'PAST-SOURCE-MOVE-'+a.originalDate+'-'+a.newDate+'-'+compact(student),
+      adjustResult:'已調課',
+      note:a.note||('來源日期 '+a.originalDate+' 已超出本次 Build 範圍；移至 '+a.newDate)
+    });
+  }
+
   // 「新增／補課／體驗」仍沿用原本的新增課程機制。
   for(const a of adjusts){
     if(!a.newDate||a.originalDate||/取消|停課/.test(a.action))continue;
