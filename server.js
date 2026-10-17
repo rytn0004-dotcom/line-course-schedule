@@ -17,7 +17,7 @@ const DEFAULT_DAYS = Number.isInteger(configuredBuildDays) && configuredBuildDay
 const PREVIEW_SOURCE_SHEET_ID = String(process.env.PREVIEW_SOURCE_SHEET_ID || SHEET_ID).trim();
 const PREVIEW_SOURCE_GID = String(process.env.PREVIEW_SOURCE_GID || '').trim();
 const PREVIEW_SOURCE_TAB_NAME = String(process.env.PREVIEW_SOURCE_TAB_NAME || '開學課表').trim();
-const AUTO_CREATE_REMINDERS = ['1','true','yes','是','啟用'].includes(normValue(process.env.SCHEDULE_AUTO_CREATE_REMINDERS || '是'));
+const AUTO_CREATE_REMINDERS = isYes(process.env.SCHEDULE_AUTO_CREATE_REMINDERS || '是', true);
 
 const auth = new google.auth.GoogleAuth({
   credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
@@ -32,6 +32,19 @@ const REMINDER_HEADERS = ['提醒ID','課程日期','上課時間','發送日期
 const DEFAULT_SITE = '愛學館信義光復校';
 const CORRECTION_HEADERS = ['日期','學生','原時間','校正動作','新時間','新課程','新老師','備註'];
 function normValue(v){ return String(v ?? '').trim().toLowerCase(); }
+function isYes(v, whenBlank=false){
+  const x=normValue(v);
+  if(!x) return whenBlank;
+  return ['是','yes','true','1','啟用','y'].includes(x);
+}
+function isNo(v){ return ['否','no','false','0','停用','n'].includes(normValue(v)); }
+function adminAuthorized(req){
+  const expected=String(process.env.SCHEDULE_ADMIN_TOKEN||'');
+  if(!expected) return false;
+  const supplied=String(req.get('x-admin-token')||req.query.token||'');
+  const a=Buffer.from(expected), b=Buffer.from(supplied);
+  return a.length===b.length && require('crypto').timingSafeEqual(a,b);
+}
 
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 function retryable(e){
@@ -111,21 +124,32 @@ function isValidDateKey(value){
   const dt=new Date(Date.UTC(y,mo-1,d));
   return dt.getUTCFullYear()===y && dt.getUTCMonth()===mo-1 && dt.getUTCDate()===d;
 }
-function parseDateFlexible(v, fallbackYear=new Date().toLocaleString('en-US',{timeZone:TZ,year:'numeric'})){
+function parseDateFlexible(v, reference=todayKey()){
   if(typeof v==='number'){
     const key=dateKey(v);
     return isValidDateKey(key)?key:'';
   }
   const x=str(v);
-  const short=x.match(/^(\d{1,2})[\/\.\-](\d{1,2})$/);
-  if(short){
-    const key=String(fallbackYear)+'-'+String(+short[1]).padStart(2,'0')+'-'+String(+short[2]).padStart(2,'0');
-    return isValidDateKey(key)?key:'';
-  }
   const full=dateKey(x);
-  return isValidDateKey(full)?full:'';
+  if(isValidDateKey(full) && /^\d{4}[-\/.]\d{1,2}[-\/.]\d{1,2}/.test(x)) return full;
+  const short=x.match(/^(\d{1,2})[\/\.\-](\d{1,2})$/);
+  if(!short) return '';
+  const refKey=isValidDateKey(String(reference)) ? String(reference) :
+    /^\d{4}$/.test(String(reference)) ? String(reference)+'-01-01' : todayKey();
+  const year=Number(refKey.slice(0,4));
+  const makeKey=y=>String(y)+'-'+String(+short[1]).padStart(2,'0')+'-'+String(+short[2]).padStart(2,'0');
+  let key=makeKey(year);
+  if(!isValidDateKey(key)) return '';
+  if(key<addDays(refKey,-30)){
+    const next=makeKey(year+1);
+    if(isValidDateKey(next)){
+      const distance=(a,b)=>Math.abs(Date.parse(a+'T00:00:00Z')-Date.parse(b+'T00:00:00Z'));
+      if(distance(next,refKey)<distance(key,refKey)) key=next;
+    }
+  }
+  return key;
 }
-function extractMoveDate(action, originalDate){
+function extractMoveDate(action, originalDate, referenceDate=originalDate||todayKey()){
   const s=str(action).replace(/[\s　]+/g,'');
   const patterns=[
     /整日(?:調課|移課|改課)(?:到|至)?[:：]?(\d{4}[-\/.]\d{1,2}[-\/.]\d{1,2})/,
@@ -133,7 +157,7 @@ function extractMoveDate(action, originalDate){
     /(?:調|移|改)(?:到|至)[:：]?(\d{4}[-\/.]\d{1,2}[-\/.]\d{1,2})/,
     /(?:調|移|改)(?:到|至)[:：]?(\d{1,2}[-\/.]\d{1,2})/
   ];
-  for(const re of patterns){ const m=s.match(re); if(m) return parseDateFlexible(m[1]); }
+  for(const re of patterns){ const m=s.match(re); if(m) return parseDateFlexible(m[1],referenceDate); }
   return '';
 }
 function todayKey(){
@@ -196,7 +220,7 @@ async function readSheets(){
       `${qsheet('固定課表')}!A:K`,
       `${qsheet('調課課程')}!A:M`,
       `${qsheet('課程校正')}!A:H`,
-      `${qsheet('實際課程')}!A:M`,
+      `${qsheet('實際課程')}!A:O`,
       `${qsheet('聯絡人')}!A:K`,
       `${qsheet('訊息模板')}!A:D`,
       `${qsheet('課程提醒')}!A:M`
@@ -228,7 +252,7 @@ function parseSettings(rows){
     send_六: str(out['週六發送時間'])
   };
 }
-function parseFixed(rows){
+function parseFixed(rows, referenceDate=todayKey()){
   const hr=findHeaderRow(rows,['固定課表ID','星期','上課時間','學生','課程','老師','校區','有效迄日','啟用']);
   if(hr<0) throw new Error('固定課表欄位不正確。');
   const h=hmap(rows[hr]), out=[];
@@ -237,7 +261,7 @@ function parseFixed(rows){
   for(let i=hr+1;i<rows.length;i++){
     const r=rows[i]||[]; const id=str(r[h['固定課表ID']]); if(!id) continue;
     const enabledRaw=str(r[h['啟用']]);
-    const enabled=norm(enabledRaw);
+    const enabled=isYes(enabledRaw);
     if(enabled!=='是' && enabled!=='否'){
       enabledIssues.push({row:i+1,id,student:str(r[h['學生']]),teacher:str(r[h['老師']]),enabledRaw});
     }
@@ -245,12 +269,12 @@ function parseFixed(rows){
     if(teacherRaw && /陳少禹|少禹/.test(teacherRaw)){
       teacherDiagnostics.push({row:i+1,id,student:str(r[h['學生']]),teacher:teacherRaw,enabled:enabledRaw,weekday:str(r[h['星期']]),rawTime:str(r[h['上課時間']]),course:str(r[h['課程']]),site:str(r[h['校區']]),until:str(r[h['有效迄日']])});
     }
-    if(enabled!=='是') continue;
+    if(!enabled) continue;
     const weekday=norm(r[h['星期']]); const rawTime=str(r[h['上課時間']]); const range=parseTimeRange(rawTime); const time=range.start||timeKey(rawTime);
     if(!weekday||!time) continue;
     const student=str(r[h['學生']])||extractStudentFromTime(rawTime);
     if(!student || isUnavailableSlot(student)) continue;
-    out.push({id,weekday,time,endTime:range.end,student,course:str(r[h['課程']]),teacher:str(r[h['老師']]),site:normalizeSite(r[h['校區']]),until:dateKey(r[h['有效迄日']]),template:str(r[h['通知模板']]),note:str(r[h['備註']]),rawTime});
+    out.push({id,weekday,time,endTime:range.end,student,course:str(r[h['課程']]),teacher:str(r[h['老師']]),site:normalizeSite(r[h['校區']]),until:parseDateFlexible(r[h['有效迄日']],referenceDate),template:str(r[h['通知模板']]),note:str(r[h['備註']]),rawTime});
   }
   // 診斷指定學生為何沒有進入「實際課程」。只記錄少禹相關資料，不改變既有排課結果。
   const diagnosticStudents=['陳少禹','少禹'];
@@ -271,7 +295,7 @@ function parseFixed(rows){
   }
   return out;
 }
-function parseAdjust(rows, correctionRows=[]){
+function parseAdjust(rows, correctionRows=[], referenceDate=todayKey()){
   const legacyHr=findHeaderRow(rows,['調課ID','原固定課表ID','原日期','原時間','動作','新日期','新時間','學生','確認']);
   const simpleHr=findHeaderRow(rows,['原日期','原時間','動作','新日期','新時間','學生','新課程','新老師']);
   const out=[];
@@ -280,18 +304,18 @@ function parseAdjust(rows, correctionRows=[]){
     for(let i=legacyHr+1;i<rows.length;i++){
       const r=rows[i]||[],id=str(r[h['調課ID']]); if(!id)continue;
       if(h['確認']!==undefined&&norm(r[h['確認']])!=='是')continue;
-      out.push({id,fixedId:str(r[h['原固定課表ID']]),originalDate:parseDateFlexible(r[h['原日期']]),originalTime:parseTimeRange(r[h['原時間']]).start||timeKey(r[h['原時間']]),action:str(r[h['動作']]),newDate:parseDateFlexible(r[h['新日期']]),newTime:parseTimeRange(r[h['新時間']]).start||timeKey(r[h['新時間']]),newEndTime:parseTimeRange(r[h['新時間']]).end,student:str(r[h['學生']]),course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:str(r[h['新校區']]),note:str(r[h['備註']]),source:'調課課程'});
+      out.push({id,fixedId:str(r[h['原固定課表ID']]),originalDate:parseDateFlexible(r[h['原日期']],referenceDate),originalTime:parseTimeRange(r[h['原時間']]).start||timeKey(r[h['原時間']]),action:str(r[h['動作']]),newDate:parseDateFlexible(r[h['新日期']],referenceDate),newTime:parseTimeRange(r[h['新時間']]).start||timeKey(r[h['新時間']]),newEndTime:parseTimeRange(r[h['新時間']]).end,student:str(r[h['學生']]),course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:str(r[h['新校區']]),note:str(r[h['備註']]),source:'調課課程'});
     }
   } else if(simpleHr>=0){
     const h=hmap(rows[simpleHr]);
     for(let i=simpleHr+1;i<rows.length;i++){
       const r=rows[i]||[],student=str(r[h['學生']]);
-      const d=parseDateFlexible(r[h['原日期']]),t=parseTimeRange(r[h['原時間']]).start||timeKey(r[h['原時間']]);
+      const d=parseDateFlexible(r[h['原日期']],referenceDate),t=parseTimeRange(r[h['原時間']]).start||timeKey(r[h['原時間']]);
       const action=str(r[h['動作']]);
       if(!d)continue;
       if(!student && !/整日/.test(action))continue;
       if(!t && !/整日/.test(action))continue;
-      out.push({id:'',fixedId:'',originalDate:d,originalTime:t,action,newDate:parseDateFlexible(r[h['新日期']]),newTime:parseTimeRange(r[h['新時間']]).start||timeKey(r[h['新時間']]),newEndTime:parseTimeRange(r[h['新時間']]).end,student,course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:'',note:'',source:'調課課程'});
+      out.push({id:'',fixedId:'',originalDate:d,originalTime:t,action,newDate:parseDateFlexible(r[h['新日期']],referenceDate),newTime:parseTimeRange(r[h['新時間']]).start||timeKey(r[h['新時間']]),newEndTime:parseTimeRange(r[h['新時間']]).end,student,course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:'',note:'',source:'調課課程'});
     }
   }
 
@@ -323,17 +347,17 @@ function parseAdjust(rows, correctionRows=[]){
     for(let i=cr+1;i<correctionRows.length;i++){
       const r=correctionRows[i]||[];
       const student=str(r[h['學生']]);
-      const d=parseDateFlexible(r[h['日期']]);
+      const d=parseDateFlexible(r[h['日期']],referenceDate);
       const t=parseTimeRange(r[h['原時間']]).start||timeKey(r[h['原時間']]);
       const action=str(r[h['校正動作']]);
       const note=str(r[h['備註']]);
 
       // 先保留原本「日期／學生／原時間／校正動作」欄位的正式填法。
       if(d && (student || /整日/.test(action)) && (t || /整日/.test(action))){
-        let newDate=extractMoveDate(action,d) || d;
+        let newDate=extractMoveDate(action,d,referenceDate) || d;
         if(newDate===d){
           const noteMove=note.match(/(?:→|->|至|到)\s*(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})/);
-          if(noteMove) newDate=parseDateFlexible(noteMove[1]);
+          if(noteMove) newDate=parseDateFlexible(noteMove[1],referenceDate);
         }
 
         pushCorrection({
@@ -351,8 +375,8 @@ function parseAdjust(rows, correctionRows=[]){
       const wideCancelRe=/整日(?:停課|取消)\s*[:：]?\s*(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})/;
       let wideMatch=note.match(wideMoveRe);
       if(wideMatch){
-        const from=parseDateFlexible(wideMatch[1]);
-        const to=parseDateFlexible(wideMatch[2]);
+        const from=parseDateFlexible(wideMatch[1],referenceDate);
+        const to=parseDateFlexible(wideMatch[2],referenceDate);
         if(from && to && from!==to){
           pushCorrection({
             id:'CORR-NOTE-WIDE-MOVE-'+(i+1)+'-'+from+'-'+to,
@@ -365,7 +389,7 @@ function parseAdjust(rows, correctionRows=[]){
       }
       wideMatch=note.match(wideCancelRe);
       if(wideMatch){
-        const from=parseDateFlexible(wideMatch[1]);
+        const from=parseDateFlexible(wideMatch[1],referenceDate);
         if(from){
           pushCorrection({
             id:'CORR-NOTE-WIDE-CANCEL-'+(i+1)+'-'+from,
@@ -393,7 +417,7 @@ function parseAdjust(rows, correctionRows=[]){
           const timeMoveRe=/(\d{1,2}:?\d{2})\s*[-~～至]\s*(\d{1,2}:?\d{2})\s*([^()（）]+?)\s*[（(]\s*(\d{4}[-\/.]\d{1,2}[-\/.]\d{1,2}|\d{1,2}[-\/.]\d{1,2})\s+(\d{1,2}:?\d{2})\s*[-~～至]\s*(\d{1,2}:?\d{2})\s*[）)]/;
           const timeMoveMatch=text.match(timeMoveRe);
           if(timeMoveMatch){
-            const moveDate=parseDateFlexible(timeMoveMatch[4]);
+            const moveDate=parseDateFlexible(timeMoveMatch[4],referenceDate);
             const moveStudent=str(timeMoveMatch[3]);
             const originalStart=timeKey(timeMoveMatch[1]);
             const originalEnd=timeKey(timeMoveMatch[2]);
@@ -413,8 +437,8 @@ function parseAdjust(rows, correctionRows=[]){
           const dateMoveRe=/(\d{1,2})\/(\d{1,2})(?:\([^)]*\))?[^()]*?調\s*(\d{1,2})\/(\d{1,2})/g;
           let m;
           while((m=dateMoveRe.exec(text))){
-            const from=parseDateFlexible(m[1]+'/'+m[2]);
-            const to=parseDateFlexible(m[3]+'/'+m[4]);
+            const from=parseDateFlexible(m[1]+'/'+m[2],referenceDate);
+            const to=parseDateFlexible(m[3]+'/'+m[4],referenceDate);
             if(!inlineStudent || !inlineTime) continue;
             pushCorrection({
               id:'CORR-NOTE-'+(i+1)+'-'+from+'-'+to+'-'+compact(inlineStudent),
@@ -429,8 +453,8 @@ function parseAdjust(rows, correctionRows=[]){
           // 後者代表 9/25～9/27 整段期間請假，不是一般備註。
           const leaveRangeRe=/(\d{1,2})\/(\d{1,2})\s*[~～\-至]\s*(\d{1,2})\/(\d{1,2})[^()]*?(?:p)?\s*請?假|(?:\()?\s*(\d{1,2})\/(\d{1,2})\s*[~～\-至]\s*(\d{1,2})\/(\d{1,2})\s*p\s*\)?/gi;
           while((m=leaveRangeRe.exec(text))){
-            const from=parseDateFlexible(m[1]+'/'+m[2]);
-            const to=parseDateFlexible(m[3]+'/'+m[4]);
+            const from=parseDateFlexible(m[1]+'/'+m[2],referenceDate);
+            const to=parseDateFlexible(m[3]+'/'+m[4],referenceDate);
             if(!inlineStudent || !inlineTime || !from || !to) continue;
             for(let leaveDate=from; leaveDate<=to; leaveDate=addDays(leaveDate,1)){
               pushCorrection({
@@ -446,7 +470,7 @@ function parseAdjust(rows, correctionRows=[]){
           // 單日請假，例如「10/3嘉恆請假」。
           const leaveRe=/(\d{1,2})\/(\d{1,2})[^()]*請假/g;
           while((m=leaveRe.exec(text))){
-            const from=parseDateFlexible(m[1]+'/'+m[2]);
+            const from=parseDateFlexible(m[1]+'/'+m[2],referenceDate);
             if(!inlineStudent || !inlineTime) continue;
             pushCorrection({
               id:'CORR-NOTE-LEAVE-'+(i+1)+'-'+from+'-'+compact(inlineStudent),
@@ -461,7 +485,7 @@ function parseAdjust(rows, correctionRows=[]){
           // 如果沒有寫課程名稱（例如「10/3加課」），則沿用正式欄位的「新課程」。
           const addRe=/(\d{1,2})\/(\d{1,2})\s*([^()（）]*?)\s*加課/g;
           while((m=addRe.exec(text))){
-            const newDate=parseDateFlexible(m[1]+'/'+m[2]);
+            const newDate=parseDateFlexible(m[1]+'/'+m[2],referenceDate);
             const course=str(m[3]) || str(r[h['新課程']]);
             if(!inlineStudent || !inlineTime) continue;
             pushCorrection({
@@ -479,7 +503,7 @@ function parseAdjust(rows, correctionRows=[]){
   return out;
 }
 
-function parseInlineAdjustments(fixed){
+function parseInlineAdjustments(fixed, referenceDate=todayKey()){
   const out=[];
   for(const f of fixed){
     const raw=str(f.rawTime);
@@ -491,8 +515,8 @@ function parseInlineAdjustments(fixed){
     const dateMoveRe=/(\d{1,2})\/(\d{1,2})(?:\([^)]*\))?[^()]*?調\s*(\d{1,2})\/(\d{1,2})/g;
     let m;
     while((m=dateMoveRe.exec(text))){
-      const from=parseDateFlexible(m[1]+'/'+m[2]);
-      const to=parseDateFlexible(m[3]+'/'+m[4]);
+      const from=parseDateFlexible(m[1]+'/'+m[2],referenceDate);
+      const to=parseDateFlexible(m[3]+'/'+m[4],referenceDate);
       out.push({
         id:'INLINE-'+f.id+'-'+from+'-'+to,
         fixedId:f.id,originalDate:from,originalTime:f.time,action:'調課',
@@ -504,7 +528,7 @@ function parseInlineAdjustments(fixed){
     // 例：(9/26改1000-1200)
     const timeMoveRe=/(\d{1,2})\/(\d{1,2})[^()]*?改\s*(\d{3,4})(?:\s*[-~～至]\s*(\d{3,4}))?/g;
     while((m=timeMoveRe.exec(text))){
-      const from=parseDateFlexible(m[1]+'/'+m[2]);
+      const from=parseDateFlexible(m[1]+'/'+m[2],referenceDate);
       const nt=timeKey(m[3]);
       if(!nt)continue;
       out.push({
@@ -518,7 +542,7 @@ function parseInlineAdjustments(fixed){
     // 例：(10/3嘉恆請假)；只在明確包含「請假」時取消該日期的該學生課程。
     const leaveRe=/(\d{1,2})\/(\d{1,2})[^()]*請假/g;
     while((m=leaveRe.exec(text))){
-      const from=parseDateFlexible(m[1]+'/'+m[2]);
+      const from=parseDateFlexible(m[1]+'/'+m[2],referenceDate);
       out.push({
         id:'INLINE-LEAVE-'+f.id+'-'+from,
         fixedId:f.id,originalDate:from,originalTime:f.time,action:'請假',
