@@ -11,7 +11,7 @@ process.env.SCHEDULE_ADMIN_TOKEN = 'test-token';
 
 const {
   isYes, isObsoleteImportedRow, parseDateFlexible, splitClassRoster, buildRows, mergeActualRows,
-  parseRawSchedule, dedupeSourceAdjustments, assignPreviewAdjustmentIds, parseAdjust, parseInlineAdjustments, parseFixed, parseSettings, actualObjects, makeReminderRows, adjustmentConflictWarnings, actualIntegrityWarnings, missingRecipientWarnings, notificationTemplateWarnings, shouldPreserveReminderConfirmation, missingActualEndTimeWarnings
+  parseRawSchedule, dedupeSourceAdjustments, assignPreviewAdjustmentIds, parseAdjust, parseInlineAdjustments, parseFixed, parseSettings, actualObjects, makeReminderRows, mergeReminderItems, adjustmentConflictWarnings, actualIntegrityWarnings, missingRecipientWarnings, notificationTemplateWarnings, shouldPreserveReminderConfirmation, missingActualEndTimeWarnings
 } = require('../server');
 
 const weekday = '一';
@@ -32,6 +32,17 @@ const fixed = (overrides = {}) => ({
 
 
 
+
+
+test('parent merged reminder lists distinct end times instead of showing only the first course range', () => {
+  const merged = mergeReminderItems([
+    { role: '家長', recipient: '家長甲', date: '2026-10-17', time: '11:00', timeRange: '11:00-12:00', student: '尚哲', course: '理化', teacher: '鄭雅方', site: '校區甲' },
+    { role: '家長', recipient: '家長甲', date: '2026-10-17', time: '11:00', timeRange: '11:00-12:30', student: '苡安', course: '數學', teacher: '鄭雅方', site: '校區甲' }
+  ]);
+  assert.equal(merged.length, 1);
+  assert.match(merged[0].timeRange, /尚哲：11:00-12:00/);
+  assert.match(merged[0].timeRange, /苡安：11:00-12:30/);
+});
 
 test('missing active LINE recipients are reported instead of silently skipping reminders', () => {
   const rows = buildRows([fixed({ student: '尚哲' })], [], '2026-10-19', 1);
