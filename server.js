@@ -2273,15 +2273,20 @@ async function buildSourcePreview(year = new Date().getFullYear()){
     redCancelled:parsed.redItems.length,
     unclassified:parsed.unclassifiedItems.length
   };
+  const previewSafe=item=>{
+    const {cellText,rowCellTexts,...safe}=item||{};
+    return safe;
+  };
   return {
     ok:true,mode:'preview-only',sourceSheetId,sourceSheetTitle,
     sourceSpreadsheetId,
     writesPerformed:false,colorRulesApplied:true,year,colorSummary,
     fixedCount:fixed.length,adjustmentCount:adjustments.length,
     redCount:parsed.redItems.length,unclassifiedCount:parsed.unclassifiedItems.length,
-    fixed:fixed.slice(0,300),adjustments:adjustments.slice(0,300),
-    redItems:parsed.redItems.slice(0,200),
-    unclassifiedItems:parsed.unclassifiedItems.slice(0,200)
+    fixed:fixed.slice(0,300).map(previewSafe),
+    adjustments:adjustments.slice(0,300).map(previewSafe),
+    redItems:parsed.redItems.slice(0,200).map(previewSafe),
+    unclassifiedItems:parsed.unclassifiedItems.slice(0,200).map(previewSafe)
   };
 }
 
