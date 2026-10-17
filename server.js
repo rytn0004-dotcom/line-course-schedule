@@ -1576,7 +1576,7 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
     const old=existingAdjustById.get(x.id);
     if(!old || ah['新時間']===undefined || ah['備註']===undefined) continue;
     const oldNote=str(old.values[ah['備註']]);
-    if(!oldNote.includes('來源：開學課表自動解析') || !oldNote.includes('[紫色調課]')) continue;
+    if(!oldNote.includes('[紫色調課]')) continue;
     const oldTime=str(old.values[ah['新時間']]);
     const oldRange=parseTimeRange(oldTime);
     // 只修復「開始時間相同、但缺少結束時間」的舊列，不覆蓋已有人為調整的完整時段。
@@ -2145,7 +2145,8 @@ function assignPreviewAdjustmentIds(adjustments, existingAdjustRows){
     // 才能就地補足下課時間，而不是再新增一筆重複調課。
     if(!id && x.colorStatus==='purple' && x.newDate && timeKey(x.newTime) && x.student){
       const candidates=existing.filter(y=>
-        y.note.includes('來源：開學課表') &&
+        // 舊版資料的備註可能直接以「[紫色調課]」開頭，沒有匯入來源前綴；
+        // 使用紫色標記加上日期、開始時間、學生和動作的唯一配對做安全辨識。
         y.note.includes('[紫色調課]') &&
         y.action===str(x.action) &&
         y.newDate===x.newDate &&
