@@ -9,7 +9,8 @@ const {
   parseSameDayTimeChangeNote,
   parseSingleDateOnlyNote,
   parseTeacherConfirmUntil,
-  splitWrappedCourseLines
+  splitWrappedCourseLines,
+  sourceTeacherCourseOverride
 } = require('../source_note_rules');
 
 test('parses same-day time changes with the source timetable notation', () => {
@@ -59,6 +60,24 @@ test('joins wrapped note lines only when parentheses are still open', () => {
     '1900-2030繹桓(9/25p調10/5b， 10/9 1230-1400)',
     '2030-2200慕萱'
   ]);
+});
+
+test('resolves explicit substitute teacher and course labels', () => {
+  assert.deepEqual(sourceTeacherCourseOverride('10/9 1030-1200詔鈞代'), {
+    teacher: '楊詔鈞', course: ''
+  });
+  assert.deepEqual(sourceTeacherCourseOverride('10/10p調10/9b佳盈代'), {
+    teacher: '吳佳盈', course: ''
+  });
+  assert.deepEqual(sourceTeacherCourseOverride('10/10p調10/9b維軒數學'), {
+    teacher: '林維軒', course: '數學'
+  });
+  assert.deepEqual(sourceTeacherCourseOverride('9/28p調10/9b政銓代'), {
+    teacher: '黃政銓', course: ''
+  });
+  assert.deepEqual(sourceTeacherCourseOverride('10/9改1030~1230'), {
+    teacher: '', course: ''
+  });
 });
 
 test('applies teacher row confirmation windows to the stated month', () => {
