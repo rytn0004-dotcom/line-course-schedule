@@ -250,14 +250,18 @@ async function readSheets(){
 
 function parseSettings(rows){
   const hr=findHeaderRow(rows,['設定項目','目前值']);
-  if(hr<0) return {};
+  if(hr<0) throw new Error('「系統設定」欄位不正確：找不到「設定項目／目前值」標題；為避免誤停用提醒，已中止建置。');
   const h=hmap(rows[hr]); const out={};
   for(let i=hr+1;i<rows.length;i++){
     const r=rows[i]||[]; const key=str(r[h['設定項目']]); if(!key) continue;
     out[key]=str(r[h['目前值']]);
   }
+  const reminderEnabled=str(out['課程提醒啟用']);
+  if(!reminderEnabled || (!isYes(reminderEnabled)&&!isNo(reminderEnabled))){
+    throw new Error('「系統設定」缺少有效的「課程提醒啟用」值；請明確填寫「是」或「否」，為避免意外停用提醒，已中止建置。');
+  }
   return {
-    enabled:str(out['課程提醒啟用']) || '否',
+    enabled:reminderEnabled,
     parentNotify:str(out['家長通知']) || '是',
     teacherNotify:str(out['老師通知']) || '是',
     requireConfirm:str(out['發送前需確認']) || '是',
@@ -1812,6 +1816,11 @@ function missingReminderTimeWarnings(actualRows, contacts, settings){
 async function build({fromDate=todayKey(),days=DEFAULT_DAYS}={}){
   if(!isValidDateKey(fromDate)) throw new Error('fromDate 必須是有效的 YYYY-MM-DD 日期');
   if(!Number.isInteger(days)||days<1||days>180) throw new Error('days 必須是 1 到 180 的整數');
+  // 提前驗證關鍵提醒設定，避免系統設定欄位出錯時先同步固定課表／調課資料。
+  const preflightSettings=await retry('preflight system settings',()=>sheets.spreadsheets.values.get({
+    spreadsheetId:SHEET_ID,range:qsheet('系統設定')+'!A:Z'
+  }));
+  parseSettings(preflightSettings.data.values||[]);
   const sourceSync=await syncSourceIntoSchedule(fromDate);
   await ensureSheet('課程提醒');
   await ensureSheetHeaders('課程校正',CORRECTION_HEADERS);
