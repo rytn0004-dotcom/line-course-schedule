@@ -136,6 +136,10 @@ function timeKey(v){
   return '';
 }
 function parseTimeRange(v){ const m=str(v).replace(/\s+/g,'').match(/(\d{1,2}:?\d{2})[-~～至](\d{1,2}:?\d{2})/); return m?{start:timeKey(m[1]),end:timeKey(m[2])}:{start:'',end:''}; }
+function normalizedStartTime(value,fallback=''){
+  const range=parseTimeRange(value);
+  return range.start||timeKey(value)||timeKey(fallback)||str(fallback);
+}
 function addMinutesToTime(value,minutesToAdd){
   const t=timeKey(value), add=Number(minutesToAdd);
   if(!t||!Number.isFinite(add)||add<0) return '';
@@ -791,7 +795,7 @@ function buildRows(fixed, adjusts, fromDate, days){
         if(/改時間|改課|調課|移課/.test(action)){
           const nd=a.newDate||d;
           if(inWindow(nd)){
-            const start=a.newTime||f.time;
+            const start=normalizedStartTime(a.newTime,f.time);
             const end=a.newEndTime||parseTimeRange(a.newTime).end||f.endTime;
             out.push({...base,date:nd,weekday:weekdayLabel(nd),time:fullTime(start,end),
               student:f.student,course:a.course||f.course,teacher:a.teacher||f.teacher,site:a.site||f.site,source:'調課',
@@ -810,7 +814,7 @@ function buildRows(fixed, adjusts, fromDate, days){
             const nd=a.newDate;
             if(!inWindow(nd)) continue;
             out.push({...base,date:nd,weekday:weekdayLabel(nd),
-              time:fullTime(a.newTime||f.time,a.newEndTime||parseTimeRange(a.newTime).end||f.endTime),
+              time:fullTime(normalizedStartTime(a.newTime,f.time),a.newEndTime||parseTimeRange(a.newTime).end||f.endTime),
               student:f.student,course:f.course,teacher:f.teacher,site:f.site,source:'調課',
               fixedId:f.id,adjustId:a.id||'DATE-MOVE-'+d+'-'+nd,adjustResult:'已調課',
               note:a.note||('整日調課：'+d+' → '+nd)});
@@ -832,7 +836,7 @@ function buildRows(fixed, adjusts, fromDate, days){
     for(const f of fixed){
       if(!str(f.student)||isUnavailableSlot(f.student)||norm(f.weekday)!==norm(weekdayLabel(a.originalDate))) continue;
       if(f.until&&isValidDateKey(f.until)&&target>f.until) continue;
-      out.push({date:target,weekday:weekdayLabel(target),time:fullTime(a.newTime||f.time,a.newEndTime||parseTimeRange(a.newTime).end||f.endTime),
+      out.push({date:target,weekday:weekdayLabel(target),time:fullTime(normalizedStartTime(a.newTime,f.time),a.newEndTime||parseTimeRange(a.newTime).end||f.endTime),
         student:f.student,course:f.course,teacher:f.teacher,site:f.site,source:'調課',
         fixedId:f.id,adjustId:a.id||'DATE-MOVE-'+a.originalDate+'-'+target,
         adjustResult:'已調課',note:a.note||('整日調課：'+a.originalDate+' → '+target),template:f.template||''});
@@ -855,7 +859,7 @@ function buildRows(fixed, adjusts, fromDate, days){
     const matchingMember=allMembers.find(n=>includesStudent(a.student,n,allStudentNames));
     if(roster.course&&!matchingMember) continue;
     const movingStudent=matchingMember||f.student;
-    const start=a.newTime||f.time;
+    const start=normalizedStartTime(a.newTime,f.time);
     const end=a.newEndTime||parseTimeRange(a.newTime).end||f.endTime;
     out.push({date:a.newDate,weekday:weekdayLabel(a.newDate),time:fullTime(start,end),
       student:movingStudent,course:a.course||f.course||roster.course,teacher:a.teacher||f.teacher,site:a.site||f.site,source:'調課',
@@ -869,7 +873,7 @@ function buildRows(fixed, adjusts, fromDate, days){
     const addDate=a.newDate||a.originalDate;
     if(!inWindow(addDate)) continue;
     const fb=fixed.find(x=>x.id===a.fixedId);
-    const start=a.newTime||a.originalTime||'';
+    const start=normalizedStartTime(a.newTime,a.originalTime);
     const end=a.newEndTime||parseTimeRange(a.newTime).end||a.originalEndTime||fb?.endTime||'';
     if(!timeKey(start)) continue;
     const student=a.student||fb?.student||'';
