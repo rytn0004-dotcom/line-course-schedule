@@ -11,7 +11,7 @@ process.env.SCHEDULE_ADMIN_TOKEN = 'test-token';
 
 const {
   isYes, isObsoleteImportedRow, parseDateFlexible, splitClassRoster, buildRows, mergeActualRows,
-  parseRawSchedule, dedupeSourceAdjustments, assignPreviewAdjustmentIds, parseAdjust, parseInlineAdjustments, parseFixed, parseSettings, actualObjects, makeReminderRows, mergeReminderItems, adjustmentConflictWarnings, actualIntegrityWarnings, missingRecipientWarnings, notificationTemplateWarnings, shouldPreserveReminderConfirmation, missingActualEndTimeWarnings
+  parseRawSchedule, dedupeRawFixedRows, dedupeSourceAdjustments, assignPreviewAdjustmentIds, parseAdjust, parseInlineAdjustments, parseFixed, parseSettings, actualObjects, makeReminderRows, mergeReminderItems, adjustmentConflictWarnings, actualIntegrityWarnings, missingRecipientWarnings, notificationTemplateWarnings, shouldPreserveReminderConfirmation, missingActualEndTimeWarnings
 } = require('../server');
 
 const weekday = '一';
@@ -462,6 +462,23 @@ test('mergeActualRows respects the actual header row instead of always assuming 
 });
 
 
+
+
+test('identical source fixed courses are deduplicated but distinct end-time conflicts are blocked', () => {
+  const base = {
+    weekday: '六', time: '11:00', endTime: '12:30', student: '尚哲',
+    course: '理化', teacher: '鄭雅方', site: '校區甲', untilDate: '',
+    colorStatus: 'black', note: '', annotations: ['10/3p']
+  };
+  const same = dedupeRawFixedRows([base, { ...base, annotations: ['10/10p'] }]);
+  assert.equal(same.rows.length, 1);
+  assert.equal(same.suppressed, 1);
+  assert.equal(same.conflicts.length, 0);
+
+  const conflict = dedupeRawFixedRows([base, { ...base, endTime: '13:00' }]);
+  assert.equal(conflict.conflicts.length, 1);
+  assert.equal(conflict.suppressed, 0);
+});
 
 test('source adjustment dedupe removes only fully identical normalized rules', () => {
   const base = {
