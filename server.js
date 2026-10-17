@@ -1740,6 +1740,42 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
 }
 
 
+
+function fixedDataQualityWarnings(rows, referenceDate=todayKey()){
+  const hr=findHeaderRow(rows,['固定課表ID','星期','上課時間','學生','課程','老師','校區','有效迄日','啟用']);
+  if(hr<0) return ['固定課表缺少必要標題列，無法完整核對資料品質。'];
+  const h=hmap(rows[hr]);
+  const badEnabled=[],badWeekday=[],badTime=[],badUntil=[],missingStudent=[];
+  for(let i=hr+1;i<rows.length;i++){
+    const r=rows[i]||[];
+    const id=str(r[h['固定課表ID']]);
+    if(!id) continue;
+    const enabledRaw=str(r[h['啟用']]);
+    if(!isYes(enabledRaw)&&!isNo(enabledRaw)){
+      badEnabled.push('列 '+(i+1)+'（'+id+'）');
+      continue;
+    }
+    if(!isYes(enabledRaw)) continue;
+    const weekday=normalizeWeekday(r[h['星期']]);
+    if(!['一','二','三','四','五','六','日'].includes(weekday)) badWeekday.push('列 '+(i+1)+'（'+id+'）');
+    const rawTime=str(r[h['上課時間']]);
+    const range=parseTimeRange(rawTime);
+    const start=range.start||timeKey(rawTime);
+    if(!start) badTime.push('列 '+(i+1)+'（'+id+'：'+(rawTime||'時間空白')+'）');
+    const untilRaw=r[h['有效迄日']];
+    if(str(untilRaw)&&!parseDateFlexible(untilRaw,referenceDate)) badUntil.push('列 '+(i+1)+'（'+id+'：'+str(untilRaw)+'）');
+    const student=str(r[h['學生']])||extractStudentFromTime(rawTime);
+    if(!student) missingStudent.push('列 '+(i+1)+'（'+id+'）');
+  }
+  const warnings=[];
+  if(badEnabled.length) warnings.push('固定課表有 '+badEnabled.length+' 筆「啟用」欄位不是明確的是／否；這些列不會排入實際課程。例：'+badEnabled.slice(0,5).join('、'));
+  if(badWeekday.length) warnings.push('固定課表有 '+badWeekday.length+' 筆星期無法判讀。例：'+badWeekday.slice(0,5).join('、'));
+  if(badTime.length) warnings.push('固定課表有 '+badTime.length+' 筆上課開始時間無法判讀。例：'+badTime.slice(0,5).join('、'));
+  if(badUntil.length) warnings.push('固定課表有 '+badUntil.length+' 筆有效迄日無法判讀；目前可能被當成沒有到期日。例：'+badUntil.slice(0,5).join('、'));
+  if(missingStudent.length) warnings.push('固定課表有 '+missingStudent.length+' 筆學生欄空白且無法從時間欄還原。例：'+missingStudent.slice(0,5).join('、'));
+  return warnings;
+}
+
 function adjustmentConflictWarnings(adjustments){
   const groups=new Map();
   for(const a of adjustments||[]){
@@ -1977,6 +2013,7 @@ async function build({fromDate=todayKey(),days=DEFAULT_DAYS}={}){
   const toDate=addDays(fromDate,days-1);
   const warnings=[
     ...(sourceSync.warnings||[]),
+    ...fixedDataQualityWarnings(fixedRows,fromDate),
     ...adjustmentConflictWarnings(adjusts),
     ...actualIntegrityWarnings(actual),
     ...missingRecipientWarnings(actual,contacts,settings),
@@ -2632,6 +2669,6 @@ app.get('/preview-source',async(req,res)=>{
 
 
 if(require.main===module) app.listen(PORT,()=>console.log(`LINE Course Schedule Manager v1.2 listening on ${PORT}`));
-module.exports={app,isYes,isNo,isObsoleteImportedRow,parseDateFlexible,splitClassRoster,normalizeMemberList,parseRawSchedule,dedupeRawFixedRows,dedupeSourceAdjustments,assignPreviewAdjustmentIds,parseAdjust,parseInlineAdjustments,parseFixed,parseSettings,buildRows,mergeActualRows,makeReminderRows,mergeReminderItems,actualObjects,adjustmentConflictWarnings,actualIntegrityWarnings,missingRecipientWarnings,notificationTemplateWarnings,shouldPreserveReminderConfirmation,missingReminderTimeWarnings,missingActualEndTimeWarnings,adminAuthorized};
+module.exports={app,isYes,isNo,isObsoleteImportedRow,parseDateFlexible,splitClassRoster,normalizeWeekday,dedupeRawFixedRows,dedupeSourceAdjustments,parseRawSchedule,assignPreviewAdjustmentIds,parseAdjust,parseInlineAdjustments,parseFixed,parseSettings,fixedDataQualityWarnings,buildRows,mergeActualRows,makeReminderRows,mergeReminderItems,actualObjects,adjustmentConflictWarnings,actualIntegrityWarnings,missingRecipientWarnings,notificationTemplateWarnings,shouldPreserveReminderConfirmation,missingReminderTimeWarnings,missingActualEndTimeWarnings,adminAuthorized};
 // Safety: do not build or write Google Sheets automatically at startup or on a timer.
 // Use the explicit /build endpoint only after reviewing the source preview.
