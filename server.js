@@ -1235,7 +1235,17 @@ function makeReminderRows(actual, contacts, templates, settings, fixedTemplateBy
   });;
 }
 
-async function syncReminders(actualRows, reminderRows, contacts, templates, settings, fromDate, days, fixedTemplateByIdInput){
+async 
+function shouldPreserveReminderConfirmation(oldValues, proposedValues, headers){
+  const h=hmap(headers);
+  const fields=['課程日期','上課時間','發送日期','發送時間','學生/學生成員','課程','老師','校區','訊息內容'];
+  return fields.every(name=>
+    h[name]!==undefined &&
+    str((oldValues||[])[h[name]])===str((proposedValues||[])[h[name]])
+  );
+}
+
+function syncReminders(actualRows, reminderRows, contacts, templates, settings, fromDate, days, fixedTemplateByIdInput){
   await ensureSheet('課程提醒');
   const fixedTemplateById=new Map();
   for(const f of fixedTemplateByIdInput) fixedTemplateById.set(f.id,f.template || '');
@@ -1302,15 +1312,19 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
       const getIdx=name=>h[name]===undefined?-1:h[name];
       const preserveMsg = str(row[getIdx('訊息內容')]);
       const preserveConfirm = str(row[getIdx('確認發送')]);
-      // 必須在覆寫新提醒內容之前檢查舊列，才能識別上次由系統清空並停用的列。
+      // 必須在覆寫新提醒內容之前確認舊列是否真的與新列一致。
       const hadUserVisibleContentBeforeUpdate =
         !!str(row[getIdx('學生/學生成員')]) ||
         !!str(row[getIdx('課程')]) ||
         !!str(row[getIdx('訊息內容')]);
       const isGeneratedReminder = /-(?:P|T)$/.test(old.id) || old.id.startsWith('MERGED-');
-      Object.assign(row, toOutput({...x,id:old.id}));
+      const proposedRow=toOutput({...x,id:old.id});
+      const sameReminderContent=shouldPreserveReminderConfirmation(old.values,proposedRow,headers);
+      Object.assign(row, proposedRow);
       if(preserveMsg && !isGeneratedReminder) row[getIdx('訊息內容')]=preserveMsg;
-      if(preserveConfirm&&hadUserVisibleContentBeforeUpdate){
+      // 只有提醒日期、時段、學生、課程、老師、校區與訊息內容都未變，才沿用舊確認狀態；
+      // 只要內容改變，就回到依「發送前需確認」設定決定的新狀態。
+      if(preserveConfirm&&hadUserVisibleContentBeforeUpdate&&sameReminderContent){
         row[getIdx('確認發送')]=isYes(preserveConfirm)?'是':(isNo(preserveConfirm)?'否':x.confirm);
       }
       updates.push({rowNumber:old.rowIndex,values:row});
@@ -2467,6 +2481,6 @@ app.get('/preview-source',async(req,res)=>{
 
 
 if(require.main===module) app.listen(PORT,()=>console.log(`LINE Course Schedule Manager v1.2 listening on ${PORT}`));
-module.exports={app,isYes,isNo,isObsoleteImportedRow,parseDateFlexible,splitClassRoster,normalizeMemberList,parseRawSchedule,dedupeSourceAdjustments,assignPreviewAdjustmentIds,parseAdjust,parseInlineAdjustments,parseFixed,parseSettings,buildRows,mergeActualRows,makeReminderRows,mergeReminderItems,actualObjects,adjustmentConflictWarnings,actualIntegrityWarnings,missingReminderTimeWarnings,missingActualEndTimeWarnings,adminAuthorized};
+module.exports={app,isYes,isNo,isObsoleteImportedRow,parseDateFlexible,splitClassRoster,normalizeMemberList,parseRawSchedule,dedupeSourceAdjustments,assignPreviewAdjustmentIds,parseAdjust,parseInlineAdjustments,parseFixed,parseSettings,buildRows,mergeActualRows,makeReminderRows,mergeReminderItems,actualObjects,adjustmentConflictWarnings,actualIntegrityWarnings,shouldPreserveReminderConfirmation,missingReminderTimeWarnings,missingActualEndTimeWarnings,adminAuthorized};
 // Safety: do not build or write Google Sheets automatically at startup or on a timer.
 // Use the explicit /build endpoint only after reviewing the source preview.
