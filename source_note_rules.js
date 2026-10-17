@@ -1,5 +1,32 @@
 'use strict';
 
+function splitWrappedCourseLines(value) {
+  const source = String(value ?? '');
+  const rawLines = [...source.matchAll(/[^\r\n]+/g)];
+  const lines = [];
+  const isCourseStart = line => /^\s*\d{1,2}:?\d{2}\s*[-~～至]\s*\d{1,2}:?\d{2}/.test(line);
+  const unclosedParentheses = line => {
+    let depth = 0;
+    for (const ch of line) {
+      if (ch === '(' || ch === '（') depth++;
+      if (ch === ')' || ch === '）') depth--;
+    }
+    return depth > 0;
+  };
+  for (const raw of rawLines) {
+    const text = raw[0].trim();
+    if (!text) continue;
+    const start = raw.index + raw[0].length - raw[0].trimStart().length;
+    const previous = lines[lines.length - 1];
+    if (previous && unclosedParentheses(previous.text) && !isCourseStart(text)) {
+      previous.text += ' ' + text;
+    } else {
+      lines.push({ text, start });
+    }
+  }
+  return lines;
+}
+
 function isValidDateKey(value) {
   const m = String(value ?? '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!m) return false;
@@ -148,6 +175,7 @@ function extractReminderStudentNames(value) {
 }
 
 module.exports = {
+  splitWrappedCourseLines,
   addMinutesToTime,
   extractReminderStudentNames,
   isValidDateKey,
