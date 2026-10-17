@@ -1534,9 +1534,14 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
   const adjustHeaders=(adjustRows[adjustHeaderRow]||[]).map(str);
   const ah=hmap(adjustHeaders);
   const existingAdjustIds=new Set();
+  const existingAdjustById=new Map();
   for(let i=adjustHeaderRow+1;i<adjustRows.length;i++){
-    const id=str((adjustRows[i]||[])[ah['調課ID']]);
-    if(id) existingAdjustIds.add(id);
+    const oldRow=adjustRows[i]||[];
+    const id=str(oldRow[ah['調課ID']]);
+    if(id){
+      existingAdjustIds.add(id);
+      existingAdjustById.set(id,{rowNumber:i+1,values:oldRow});
+    }
   }
   const fixedIdByKey=new Map(matchedFixed.map(x=>[rawFixedLogicalKey(x),x.id]));
   const assignedAdjustments=assignPreviewAdjustmentIds(
@@ -1550,6 +1555,7 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
   );
   const activeSourceAdjustIds=new Set(assignedAdjustments.map(x=>x.id));
   const adjustUpdates=[];
+  const adjustmentTimeCorrections=[];
   if(parsed.fixed.length>0){
     for(let i=adjustHeaderRow+1;i<adjustRows.length;i++){
       const oldRow=adjustRows[i]||[];
@@ -1563,6 +1569,28 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
       adjustUpdates.push({rowNumber:i+1,values:row.slice(0,adjustHeaders.length)});
     }
   }
+  // 修復舊版已匯入的紫色單次課程：若來源行明確有完整時段，
+  // 但自動匯入列只存了開始時間，僅補足「新時間」的結束時間；保留其他人工欄位。
+  for(const x of assignedAdjustments){
+    if(!x.id || x.colorStatus!=='purple' || !timeKey(x.newTime) || !timeKey(x.newEndTime)) continue;
+    const old=existingAdjustById.get(x.id);
+    if(!old || ah['新時間']===undefined || ah['備註']===undefined) continue;
+    const oldNote=str(old.values[ah['備註']]);
+    if(!oldNote.includes('來源：開學課表自動解析') || !oldNote.includes('[紫色調課]')) continue;
+    const oldTime=str(old.values[ah['新時間']]);
+    const oldRange=parseTimeRange(oldTime);
+    // 只修復「開始時間相同、但缺少結束時間」的舊列，不覆蓋已有人為調整的完整時段。
+    if(oldRange.end || (oldRange.start||timeKey(oldTime))!==timeKey(x.newTime)) continue;
+    const row=old.values.slice();
+    while(row.length<adjustHeaders.length) row.push('');
+    row[ah['新時間']]=fullTime(x.newTime,x.newEndTime);
+    const already=adjustUpdates.findIndex(u=>u.rowNumber===old.rowNumber);
+    const update={rowNumber:old.rowNumber,values:row.slice(0,adjustHeaders.length)};
+    if(already>=0) adjustUpdates[already]=update;
+    else adjustUpdates.push(update);
+    adjustmentTimeCorrections.push({id:x.id,rowNumber:old.rowNumber});
+  }
+
   const adjustToAdd=assignedAdjustments.filter(x=>x.id && !existingAdjustIds.has(x.id));
   const adjustOutput=adjustToAdd.map(x=>{
     const row=new Array(adjustHeaders.length).fill('');
@@ -1573,7 +1601,10 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
     set('原時間',x.originalTime||'');
     set('動作',x.action||'');
     set('新日期',x.newDate||'');
-    set('新時間',x.newTime||'');
+    const newRange=parseTimeRange(x.newTime);
+    const newStart=newRange.start||timeKey(x.newTime)||x.newTime||'';
+    const newEnd=timeKey(x.newEndTime)||newRange.end;
+    set('新時間',newEnd?fullTime(newStart,newEnd):newStart);
     set('學生',x.student||'');
     set('新課程',x.course||'');
     set('新老師',x.teacher||'');
@@ -1624,6 +1655,7 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
     fixedAdded:fixedOutput.length,
     fixedCorrected:fixedUpdates.length,
     adjustmentsAdded:adjustOutput.length,
+    adjustmentsCorrected:adjustmentTimeCorrections.length,
     existingRowsPreserved:true,
     translationEnabled:true
   };
@@ -1924,7 +1956,7 @@ function parseRawPurpleCourse(item, year = new Date().getFullYear()){
   const courseName=isKnownSubstitute ? '英文' : item.course;
   return [{
     id:'',fixedId:'',weekday:item.weekday,originalDate:'',originalTime:'',
-    action,newDate,newTime,student:studentName,course:courseName,
+    action,newDate,newTime,newEndTime:item.endTime||'',student:studentName,course:courseName,
     teacher:item.teacher,site:item.site,
     note:'[紫色調課] '+originNote+'單次課程：'+(item.raw||item.student)+'；備註：'+(annotationText||'無')+'；字色 '+(item.colorHex||'未知')+extensionNote,
     source:'開學課表',colorStatus:'purple',colorHex:item.colorHex||''
@@ -2097,7 +2129,7 @@ function assignPreviewAdjustmentIds(adjustments, existingAdjustRows){
     const h=hmap(existingAdjustRows[hr]);
     for(let i=hr+1;i<existingAdjustRows.length;i++){
       const r=existingAdjustRows[i]||[], id=str(r[h['調課ID']]);
-      if(id) existing.push({id,fixedId:str(r[h['原固定課表ID']]),originalDate:parseDateFlexible(r[h['原日期']]),originalTime:timeKey(r[h['原時間']]),action:str(r[h['動作']]),newDate:parseDateFlexible(r[h['新日期']]),newTime:(parseTimeRange(r[h['新時間']]).start&&parseTimeRange(r[h['新時間']]).end?parseTimeRange(r[h['新時間']]).start+'-'+parseTimeRange(r[h['新時間']]).end:timeKey(r[h['新時間']])),student:str(r[h['學生']])});
+      if(id) existing.push({id,fixedId:str(r[h['原固定課表ID']]),originalDate:parseDateFlexible(r[h['原日期']]),originalTime:timeKey(r[h['原時間']]),action:str(r[h['動作']]),newDate:parseDateFlexible(r[h['新日期']]),newTime:parseTimeRange(r[h['新時間']]).start||timeKey(r[h['新時間']]),student:str(r[h['學生']])});
     }
   }
   let max=0;
@@ -2238,6 +2270,6 @@ app.get('/preview-source',async(req,res)=>{
 
 
 if(require.main===module) app.listen(PORT,()=>console.log(`LINE Course Schedule Manager v1.2 listening on ${PORT}`));
-module.exports={app,isYes,isNo,isObsoleteImportedRow,parseDateFlexible,splitClassRoster,normalizeMemberList,parseAdjust,parseInlineAdjustments,parseFixed,parseSettings,buildRows,mergeActualRows,makeReminderRows,mergeReminderItems,actualObjects,missingReminderTimeWarnings,missingActualEndTimeWarnings,adminAuthorized};
+module.exports={app,isYes,isNo,isObsoleteImportedRow,parseDateFlexible,splitClassRoster,normalizeMemberList,parseRawSchedule,parseAdjust,parseInlineAdjustments,parseFixed,parseSettings,buildRows,mergeActualRows,makeReminderRows,mergeReminderItems,actualObjects,missingReminderTimeWarnings,missingActualEndTimeWarnings,adminAuthorized};
 // Safety: do not build or write Google Sheets automatically at startup or on a timer.
 // Use the explicit /build endpoint only after reviewing the source preview.
