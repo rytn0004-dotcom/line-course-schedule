@@ -1,6 +1,14 @@
 require('dotenv').config();
 const express = require('express');
 const { google } = require('googleapis');
+const {
+  addMinutesToTime,
+  extractReminderStudentNames,
+  parseDurationTargetDates,
+  parseSameDayTimeChangeNote,
+  parseSingleDateOnlyNote,
+  parseTeacherConfirmUntil
+} = require('./source_note_rules');
 
 for (const key of ['GOOGLE_SHEET_ID','GOOGLE_SERVICE_ACCOUNT_JSON']) {
   if (!process.env[key]) throw new Error(`Missing required environment variable: ${key}`);
@@ -1526,15 +1534,16 @@ function parseRawCourseCell(cell, teacher, weekday, year = new Date().getFullYea
     }
     let student=rest.replace(/\s+/g,' ').trim();
     if(!student || isUnavailableSlot(student)) continue;
-    const durationMatch=student.match(/(?:\+|＋)\s*30\s*min(?:ute)?s?/i);
-    const durationAdjustmentMinutes=durationMatch?30:0;
-    if(durationMatch) student=student.replace(/(?:\+|＋)\s*30\s*min(?:ute)?s?/ig,'').trim();
     const annotationText=annotations.join('；');
+    const durationMatch=student.match(/(?:\+|＋)\s*30\s*min(?:ute)?s?/i);
+    const durationVariantNote=/各\s*[+＋]?\s*30\s*min(?:ute)?s?/i.test(annotationText);
+    const durationAdjustmentMinutes=(durationMatch||durationVariantNote)?30:0;
+    if(durationMatch) student=student.replace(/(?:\+|＋)\s*30\s*min(?:ute)?s?/ig,'').trim();
     const untilMatch=annotationText.match(/(?:直到|至)\s*(\d{1,2})\/(\d{1,2})/);
     const untilDate=untilMatch?parseDateFlexible(untilMatch[1]+'/'+untilMatch[2],year):'';
     out.push({
       teacher,weekday,time:start,endTime:end,student,course:'',site:'',
-      annotations,raw:line,colorStatus:colorInfo.status,colorHex:colorInfo.hex,
+      annotations,raw:line,cellText:rawText,colorStatus:colorInfo.status,colorHex:colorInfo.hex,
       colorSource:colorInfo.colorSource,durationAdjustmentMinutes,untilDate,
       note:[colorInfo.status==='yellow'?'[黃色確認中]':'',durationAdjustmentMinutes?'[指定日期加時30分鐘]':'',annotations.some(a=>/可能加半小|可能延長半小時/.test(a))?'[可能延長30分鐘，待確認]':''].filter(Boolean).join('；')
     });
