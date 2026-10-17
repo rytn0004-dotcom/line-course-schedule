@@ -11,7 +11,7 @@ process.env.SCHEDULE_ADMIN_TOKEN = 'test-token';
 
 const {
   isYes, isObsoleteImportedRow, parseDateFlexible, splitClassRoster, buildRows, mergeActualRows,
-  parseRawSchedule, assignPreviewAdjustmentIds, parseAdjust, parseInlineAdjustments, actualObjects, makeReminderRows, missingActualEndTimeWarnings
+  parseRawSchedule, assignPreviewAdjustmentIds, parseAdjust, parseInlineAdjustments, parseFixed, actualObjects, makeReminderRows, missingActualEndTimeWarnings
 } = require('../server');
 
 const weekday = '一';
@@ -35,9 +35,10 @@ test('yes/no setting values normalize consistently', () => {
   for (const value of ['否', 'no', 'false', '0', '停用', '']) assert.equal(isYes(value), false);
 });
 
-test('short date rolls into next year when the requested window is late December', () => {
+test('short date rolls to the nearest year in both directions', () => {
   assert.equal(parseDateFlexible('1/5', '2026-12-20'), '2027-01-05');
   assert.equal(parseDateFlexible('10/9', '2026-10-17'), '2026-10-09');
+  assert.equal(parseDateFlexible('12/30', '2027-01-03'), '2026-12-30');
 });
 
 test('group roster is split into a class name and exact student names', () => {
@@ -289,6 +290,85 @@ test('purple single-course adjustment keeps its end time and does not raise a fa
   assert.equal(missingActualEndTimeWarnings(rows).length, 0);
 });
 
+
+
+test('source schedule time adjustments preserve the adjusted end time, including mixed notes', () => {
+  const parsed = parseRawSchedule([
+    ['老師', '星期二', '星期五'],
+    ['林囿錡', { value: '1700-1830以宸(10/13 1930-2100)' }, { value: '1900-2030繹桓(9/25p調10/5b，10/9 1230-1400)' }]
+  ], 2026, {}, '2026-10-17');
+
+  const yiChen = parsed.adjustments.find(x => x.student === '以宸' && x.newDate === '2026-10-13');
+  assert.ok(yiChen);
+  assert.equal(yiChen.newTime, '19:30');
+  assert.equal(yiChen.newEndTime, '21:00');
+  const yiChenActual = buildRows(parsed.fixed.filter(x => x.student === '以宸'), [yiChen], '2026-10-13', 1);
+  assert.equal(yiChenActual.find(x => x[4] === '以宸')[3], '19:30-21:00');
+
+  const yiHuan = parsed.adjustments.find(x => x.student === '繹桓' && x.newDate === '2026-10-09' && x.action === '改時間');
+  assert.ok(yiHuan);
+  assert.equal(yiHuan.newTime, '12:30');
+  assert.equal(yiHuan.newEndTime, '14:00');
+  const yiHuanActual = buildRows(parsed.fixed.filter(x => x.student === '繹桓'), [yiHuan], '2026-10-09', 1);
+  assert.equal(yiHuanActual.find(x => x[4] === '繹桓')[3], '12:30-14:00');
+});
+
+test('correction-note and fixed-note time moves retain the new end time', () => {
+  const correctionRows = [
+    ['日期', '學生', '原時間', '校正動作', '新時間', '新課程', '新老師', '備註'],
+    ['', '', '', '', '', '', '', '1830-2000昀瑄(10/9 0900-1030)']
+  ];
+  const correction = parseAdjust([], correctionRows, '2026-10-17')
+    .find(x => x.student === '昀瑄' && x.action === '改時間');
+  assert.ok(correction);
+  assert.equal(correction.newTime, '09:00');
+  assert.equal(correction.newEndTime, '10:30');
+  const moved = buildRows([fixed({ weekday: '五', student: '昀瑄' })], [correction], '2026-10-09', 1);
+  assert.equal(moved.find(x => x[4] === '昀瑄')[3], '09:00-10:30');
+
+  const inline = parseInlineAdjustments([fixed({
+    id: 'FS-TIME',
+    weekday: '六',
+    time: '10:30',
+    endTime: '12:00',
+    rawTime: '1030-1200承蓁',
+    student: '承蓁',
+    note: '(9/26改1000-1200)'
+  })], '2026-09-26').find(x => x.action === '改時間');
+  assert.ok(inline);
+  assert.equal(inline.newTime, '10:00');
+  assert.equal(inline.newEndTime, '12:00');
+});
+
+test('teacher-cell side notes are surfaced for manual review instead of being silently discarded', () => {
+  const parsed = parseRawSchedule([
+    ['老師', '星期二'],
+    ['陳少禹\\n11月後的課程還要再做確認', { value: '1900-2030彥銘' }]
+  ], 2026, {}, '2026-10-17');
+  assert.deepEqual(parsed.teacherNotes, [{
+    teacher: '陳少禹',
+    note: '11月後的課程還要再做確認',
+    sourceRow: 2
+  }]);
+});
+
+test('invalid hours are not accepted as valid course start times', () => {
+  const rows = [
+    ['固定課表ID', '星期', '上課時間', '學生', '課程', '老師', '校區', '有效迄日', '啟用', '備註', '通知模板'],
+    ['FS-BAD', '一', '25:00-26:00', '學生甲', '數學', '老師甲', '校區甲', '', '是', '', '']
+  ];
+  assert.deepEqual(parseFixed(rows, '2026-10-17'), []);
+});
+
+test('mergeActualRows respects the actual header row instead of always assuming row 2', () => {
+  const headers = ['Course ID', '課程日期', '星期', '上課時間', '學生', '課程', '老師', '校區', '來源', '固定課表ID', '調課ID', '調課結果', '備註', '開始時間（出勤用）', '下課時間（出勤用）'];
+  const oldCourse = ['FS001-2026-12-01', '2026-12-01', '二', '18:30-20:00', '尚哲', '理化', '王老師', '愛學館信義光復校', '固定課表', 'FS001', '', '無', '', '18:30', '20:00'];
+  const previous = [['標題列'], [''], [''], headers, oldCourse];
+  const merged = mergeActualRows([], previous, '2026-10-17', '2026-11-15', 3);
+  assert.equal(merged.previousDataCount, 1);
+  assert.equal(merged.merged.length, 1);
+  assert.equal(merged.merged[0][1], '2026-12-01');
+});
 
 test('missing course end time is reported rather than silently treated as complete', () => {
   const rows = buildRows([fixed({ endTime: '' })], [], '2026-10-19', 1);
