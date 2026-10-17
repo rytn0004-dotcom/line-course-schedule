@@ -1233,7 +1233,7 @@ function makeReminderRows(actual, contacts, templates, settings, fixedTemplateBy
         '課程：'+(x.course||'課程'),
         '老師：'+(x.teacher||'待確認'),
         '校區：'+x.site
-      ].join('\\n');
+      ].join('\n');
     }
     return {
       key:id+'|'+x.role+'|'+x.recipient,
