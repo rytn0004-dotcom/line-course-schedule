@@ -884,6 +884,25 @@ function mergeActualRows(rows, previousRows, fromDate, toDate){
   return {merged,previousDataCount:previous.length};
 }
 async function writeActual(rows, previousRows=[], fromDate=todayKey(), toDate=fromDate){
+  const headerColumns=[
+    'Course ID','課程日期','星期','上課時間','學生','課程','老師','校區',
+    '來源','固定課表ID','調課ID','調課結果','備註'
+  ];
+  const headerIndex=findHeaderRow(previousRows,headerColumns);
+  if(headerIndex<0){
+    throw new Error('安全保護：「實際課程」找不到完整的前 13 欄標題，為避免寫錯欄位，未寫入資料。');
+  }
+  const headerRow=(previousRows[headerIndex]||[]).slice();
+  while(headerRow.length<15) headerRow.push('');
+  const wantedAttendanceHeaders=['開始時間（出勤用）','下課時間（出勤用）'];
+  const headerNeedsUpdate=headerRow[13]!==wantedAttendanceHeaders[0]||headerRow[14]!==wantedAttendanceHeaders[1];
+  if(headerNeedsUpdate){
+    await retry('ensure 實際課程 attendance headers',()=>sheets.spreadsheets.values.update({
+      spreadsheetId:SHEET_ID,
+      range:qsheet('實際課程')+'!N'+(headerIndex+1)+':O'+(headerIndex+1),
+      valueInputOption:'RAW',requestBody:{values:[wantedAttendanceHeaders]}
+    }));
+  }
   const {merged,previousDataCount}=mergeActualRows(rows,previousRows,fromDate,toDate);
   const lastExistingDataRow=Math.max(2,(previousRows||[]).length);
   if(merged.length){
@@ -1578,6 +1597,16 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
   };
 }
 
+function missingActualEndTimeWarnings(actualRows){
+  const missing=(actualRows||[]).filter(row=>{
+    const range=parseTimeRange(row[3]);
+    return !(range.end||timeKey(row[14]));
+  });
+  if(!missing.length) return [];
+  const sample=missing.slice(0,5).map(row=>str(row[4])+' '+str(row[1])+' '+str(row[3])).join('、');
+  return ['有 '+missing.length+' 筆實際課程缺少下課時間，無法形成完整的 HH:MM-HH:MM；請檢查來源課表／加課時段。例：'+sample];
+}
+
 function missingReminderTimeWarnings(actualRows, contacts, settings){
   if(!AUTO_CREATE_REMINDERS||!isYes(settings.enabled)) return [];
   const missingByDay=new Map();
@@ -1631,7 +1660,7 @@ async function build({fromDate=todayKey(),days=DEFAULT_DAYS}={}){
     actualMatches:diagActual.map(x=>({courseId:x.courseId,date:x.date,weekday:x.weekday,time:x.time,student:x.student,course:x.course,teacher:x.teacher,site:x.site,source:x.source,fixedId:x.fixedId,adjustId:x.adjustId,adjustResult:x.adjustResult,note:x.note}))
   });
   const toDate=addDays(fromDate,days-1);
-  const warnings=missingReminderTimeWarnings(actual,contacts,settings);
+  const warnings=[...missingReminderTimeWarnings(actual,contacts,settings),...missingActualEndTimeWarnings(actual)];
   await writeActual(actual,oldActualRows,fromDate,toDate);
   const reminder=AUTO_CREATE_REMINDERS
     ? await syncReminders(actual,reminderRows,contacts,templates,settings,fromDate,days,fixedTemplateByIdInput)
@@ -2177,6 +2206,6 @@ app.get('/preview-source',async(req,res)=>{
 
 
 if(require.main===module) app.listen(PORT,()=>console.log(`LINE Course Schedule Manager v1.2 listening on ${PORT}`));
-module.exports={app,isYes,isNo,parseDateFlexible,splitClassRoster,normalizeMemberList,parseAdjust,parseFixed,parseSettings,buildRows,mergeActualRows,makeReminderRows,mergeReminderItems,actualObjects,missingReminderTimeWarnings,adminAuthorized};
+module.exports={app,isYes,isNo,parseDateFlexible,splitClassRoster,normalizeMemberList,parseAdjust,parseFixed,parseSettings,buildRows,mergeActualRows,makeReminderRows,mergeReminderItems,actualObjects,missingReminderTimeWarnings,missingActualEndTimeWarnings,adminAuthorized};
 // Safety: do not build or write Google Sheets automatically at startup or on a timer.
 // Use the explicit /build endpoint only after reviewing the source preview.
