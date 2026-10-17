@@ -1,18 +1,22 @@
-name: Node syntax check
+name: Node syntax and regression tests
 
 on:
   push:
-    branches: [main]
+    branches: ['**']
   pull_request:
     branches: [main]
 
 jobs:
-  syntax:
+  syntax-and-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - name: Install dependencies
+        run: npm install
       - name: Check server syntax
         run: node --check server.js
+      - name: Run regression tests
+        run: npm test
