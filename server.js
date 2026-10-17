@@ -390,7 +390,7 @@ function parseAdjust(rows, correctionRows=[]){
           // 「9/25p調10/3b」或「10/10(六)調10/9b」
           // 「1830-2000昀瑄(10/9 0900-1030)」：同一天只調整時間。
           // 括號內日期是課程日期，括號內時段是調整後時段。
-          const timeMoveRe=/(\\d{1,2}:?\\d{2})\\s*[-~～至]\\s*(\\d{1,2}:?\\d{2})\\s*([^()（）]+?)\\s*[（(]\\s*(\\d{4}[-\\/.]\\d{1,2}[-\\/.]\\d{1,2}|\\d{1,2}[-\\/.]\\d{1,2})\\s+(\\d{1,2}:?\\d{2})\\s*[-~～至]\\s*(\\d{1,2}:?\\d{2})\\s*[）)]/;
+          const timeMoveRe=/(\d{1,2}:?\d{2})\s*[-~～至]\s*(\d{1,2}:?\d{2})\s*([^()（）]+?)\s*[（(]\s*(\d{4}[-\/.]\d{1,2}[-\/.]\d{1,2}|\d{1,2}[-\/.]\d{1,2})\s+(\d{1,2}:?\d{2})\s*[-~～至]\s*(\d{1,2}:?\d{2})\s*[）)]/;
           const timeMoveMatch=text.match(timeMoveRe);
           if(timeMoveMatch){
             const moveDate=parseDateFlexible(timeMoveMatch[4]);
