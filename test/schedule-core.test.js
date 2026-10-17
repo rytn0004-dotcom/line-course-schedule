@@ -184,3 +184,60 @@ test('disabled reminder setting creates no reminders', () => {
   const reminders = makeReminderRows(actualObjects(rows), [], [], settings, new Map());
   assert.deepEqual(reminders, []);
 });
+
+
+test('whole-day rules with a student/course/teacher field do not affect every course', () => {
+  const mondayCourses = [
+    fixed({ id: 'FS001', student: '尚哲' }),
+    fixed({ id: 'FS002', student: '芯瑜', course: '數學', teacher: '李老師' })
+  ];
+  const accidentalWide = {
+    id: 'ADJ-WIDE-FILLED',
+    originalDate: '2026-10-12',
+    originalTime: '',
+    action: '整日調課到2026-10-20',
+    newDate: '2026-10-20',
+    newTime: '',
+    student: '',
+    course: '英文',
+    teacher: '張老師',
+    source: '課程校正'
+  };
+  const rows = buildRows(mondayCourses, [accidentalWide], '2026-10-12', 1);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map(row => row[4]).sort(), ['尚哲', '芯瑜'].sort());
+  assert.ok(rows.every(row => row[1] === '2026-10-12'));
+});
+
+test('parent matching requires exact full name or unique exact short alias', () => {
+  const rows = buildRows([fixed({
+    id: 'FS012',
+    weekday: '二',
+    student: '生物團班(葉依柔、陳翊森)',
+    course: '',
+    teacher: '王老師'
+  })], [], '2026-10-20', 1);
+  const settings = {
+    enabled: '是', parentNotify: '是', teacherNotify: '否', requireConfirm: '否',
+    send_一: '17:00', send_二: '17:00', send_三: '17:00', send_四: '17:00',
+    send_五: '17:00', send_六: '17:00'
+  };
+  const contacts = [
+    { name: '依柔家長', role: '家長', related: '依柔', userId: 'U-1' },
+    { name: '錯誤關聯', role: '家長', related: '葉依', userId: 'U-2' }
+  ];
+  const reminders = makeReminderRows(actualObjects(rows), contacts, [], settings, new Map());
+  assert.equal(reminders.length, 1);
+  assert.equal(reminders[0].recipient, '依柔家長');
+});
+
+test('admin authorization rejects missing or wrong tokens', () => {
+  const { adminAuthorized } = require('../server');
+  const request = supplied => ({
+    get: name => name.toLowerCase() === 'x-admin-token' ? supplied : undefined,
+    query: {}
+  });
+  assert.equal(adminAuthorized(request('test-token')), true);
+  assert.equal(adminAuthorized(request('wrong-token')), false);
+  assert.equal(adminAuthorized(request('')), false);
+});
