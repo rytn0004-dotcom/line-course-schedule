@@ -2235,15 +2235,15 @@ function parseRawCourseCell(cell, teacher, weekday, year = new Date().getFullYea
     if(durationMatch) student=student.replace(/(?:\+|＋)\s*(?:30|45)\s*min(?:ute)?s?/ig,'').trim();
     const annotationText=annotations.join('；');
     const durationInAnnotation=annotationText.match(/(?:\+|＋)\s*(30|45)\s*min(?:ute)?s?|加\s*(30|45)\s*分|加時(?:一次)?\s*(30|45)\s*min(?:ute)?s?/i);
-    const durationAdjustmentMinutes=durationFromStudent||(
-      durationInAnnotation?Number(durationInAnnotation[1]||durationInAnnotation[2]||durationInAnnotation[3]):0
-    );
+    const durationFromAnnotation=durationInAnnotation?Number(durationInAnnotation[1]||durationInAnnotation[2]||durationInAnnotation[3]):0;
+    const durationAdjustmentMinutes=durationFromStudent||durationFromAnnotation;
     const untilMatch=annotationText.match(/(?:直到|至)\s*(\d{1,2})\/(\d{1,2})/);
     const untilDate=untilMatch?parseDateFlexible(untilMatch[1]+'/'+untilMatch[2],year):'';
     out.push({
       teacher,weekday,time:start,endTime:end,student,course:'',site:'',
       annotations,raw:line,colorStatus:colorInfo.status,colorHex:colorInfo.hex,
-      colorSource:colorInfo.colorSource,durationAdjustmentMinutes,untilDate,
+      colorSource:colorInfo.colorSource,durationAdjustmentMinutes,
+      durationFromStudent:durationFromStudent>0,durationFromAnnotation:durationFromAnnotation>0,untilDate,
       note:[colorInfo.status==='yellow'?'[黃色確認中]':'',durationAdjustmentMinutes?'[指定日期加時'+durationAdjustmentMinutes+'分鐘]':'',annotations.some(a=>/可能加半小|可能延長半小時/.test(a))?'[可能延長30分鐘，待確認]':''].filter(Boolean).join('；')
     });
   }
@@ -2421,6 +2421,13 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
       for(const item of parseRawCourseCell(row[Number(col)],teacher,weekday,dateReference,themeColors)){
         if(item.durationAdjustmentMinutes && ['black','yellow','purple'].includes(item.colorStatus)){
           durationRows.push(item);
+          const noteText=(item.annotations||[]).join('；').replace(/\s+/g,'');
+          const hasMoveAnnotation=/\d{1,2}\/\d{1,2}[^()]*調\d{1,2}\/\d{1,2}/.test(noteText);
+          // 學生後綴「+30min」代表獨立的加時規則列；備註「10/8加30分」可能就是唯一的固定課列，
+          // 先暫存為候選固定課，稍後若找到同時段的正式基準課再排除候選列。
+          if(!item.durationFromStudent&&!hasMoveAnnotation&&['black','yellow'].includes(item.colorStatus)){
+            fixed.push({...item,durationAdjustmentMinutes:0,durationRuleSource:true});
+          }
           continue;
         }
         if(item.colorStatus==='black' || item.colorStatus==='yellow'){
@@ -2440,22 +2447,62 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
   }
 
   // 加時規則可能寫在學生後綴（+30min），也可能寫在備註（10/8加30分、10/3加時一次30min）。
-  // 若「調至多個日期各+Nmin」，只展開「調」後明列的目的日期，不把其他說明中的日期誤當加時日。
+  // 對只有「加時」註記的單一固定課列，若沒有另一筆基準課就保留該課；若另有普通基準課，移除暫存的延長列。
   for(const item of durationRows){
     const annotationText=(item.annotations||[]).join('；');
-    const targetDateStrings=[];
+    const noteText=annotationText.replace(/\s+/g,'');
+    const hasMove=/(?:^|[^0-9])\d{1,2}\/\d{1,2}[^()]*調\s*\d{1,2}\/\d{1,2}/.test(noteText);
+    if(!item.durationFromStudent&&!hasMove&&['black','yellow'].includes(item.colorStatus)){
+      const candidateIndex=fixed.findIndex(x=>x.durationRuleSource&&x.raw===item.raw&&x.teacher===item.teacher&&x.weekday===item.weekday);
+      const hasRegularBase=fixed.some(x=>!x.durationRuleSource&&x.weekday===item.weekday&&compact(x.student)===compact(item.student)&&x.time===item.time);
+      if(candidateIndex>=0){
+        if(hasRegularBase) fixed.splice(candidateIndex,1);
+        else fixed[candidateIndex].durationRuleSource=false;
+      }
+    }
+  }
+
+  // 若課程註記是「9/30p調10/13b+45min」，這是指定日期單次移課，不是每週固定課。
+  // 「9/28p調9/21、10/5、10/12各+30min」則只對調後的多個明列日期套用加時。
+  for(const item of durationRows){
+    const annotationText=(item.annotations||[]).join('；');
+    const targetDateStrings=[], sourceDateStrings=[];
     const movedListRe=/(\d{1,2})\/(\d{1,2})[^()]*?調\s*((?:\d{1,2}\/\d{1,2})(?:\s*[、，,]\s*\d{1,2}\/\d{1,2})*)/g;
-    for(const moved of annotationText.matchAll(movedListRe)){
+    for(const moved of annotationText.replace(/\s+/g,'').matchAll(movedListRe)){
+      sourceDateStrings.push(moved[1]+'/'+moved[2]);
       for(const m of moved[3].matchAll(/(\d{1,2})\/(\d{1,2})/g)) targetDateStrings.push(m[1]+'/'+m[2]);
     }
-    if(!targetDateStrings.length){
-      for(const m of annotationText.matchAll(/(\d{1,2})\/(\d{1,2})/g)) targetDateStrings.push(m[1]+'/'+m[2]);
-    }
-    const dates=[];
     const seenDates=new Set();
-    for(const token of targetDateStrings){
-      const d=parseDateFlexible(token,dateReference);
-      if(d&&!seenDates.has(d)){dates.push(d);seenDates.add(d);}
+    const normalizeDates=tokens=>{
+      const out=[];
+      for(const token of tokens){
+        const d=parseDateFlexible(token,dateReference);
+        if(d&&!seenDates.has(d)){out.push(d);seenDates.add(d);}
+      }
+      return out;
+    };
+    const moveTargets=normalizeDates(targetDateStrings);
+    if(moveTargets.length===1&&sourceDateStrings.length){
+      const sourceDate=parseDateFlexible(sourceDateStrings[0],dateReference);
+      const minutesToAdd=Number(item.durationAdjustmentMinutes)||30;
+      const extensionEnd=addMinutesToTime(item.endTime,minutesToAdd);
+      if(!extensionEnd){
+        unclassifiedItems.push({...item,note:'[單次移課加時待確認] 無法計算加時後的下課時間；未自動套用'});
+        continue;
+      }
+      adjustments.push({
+        id:'',fixedId:'',weekday:item.weekday,originalDate:sourceDate||'',originalTime:item.time,
+        action:'補課',newDate:moveTargets[0],newTime:fullTime(item.time,extensionEnd),newEndTime:extensionEnd,
+        student:item.student,course:item.course,teacher:item.teacher,site:item.site,
+        note:'來源：開學課表；單次移課加時'+minutesToAdd+'分鐘；'+annotationText,
+        source:'開學課表',colorStatus:item.colorStatus
+      });
+      continue;
+    }
+    let targetTokens=moveTargets.length?moveTargets:[];
+    if(!targetTokens.length){
+      const allDateStrings=[...annotationText.matchAll(/(\d{1,2})\/(\d{1,2})/g)].map(m=>m[1]+'/'+m[2]);
+      targetTokens=normalizeDates(allDateStrings);
     }
     const base=fixed.find(x=>
       x.weekday===item.weekday &&
@@ -2466,11 +2513,11 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
     const minutesToAdd=Number(item.durationAdjustmentMinutes)||30;
     const baseEnd=base?.endTime||'';
     const extensionEnd=addMinutesToTime(baseEnd,minutesToAdd);
-    if(!dates.length || !base || !extensionEnd){
+    if(!targetTokens.length||!base||!extensionEnd){
       unclassifiedItems.push({...item,note:'[加時課程待確認] 找不到唯一對應固定課程、有效日期清單或可計算的下課時間；未自動套用'});
       continue;
     }
-    for(const d of dates){
+    for(const d of targetTokens){
       const action=item.colorStatus==='yellow'?'延長時間待確認':'延長時間';
       adjustments.push({
         id:'',fixedId:'',weekday:item.weekday,originalDate:d,originalTime:item.time,
