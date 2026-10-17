@@ -369,7 +369,7 @@ function parseAdjust(rows, correctionRows=[], referenceDate=todayKey()){
         }
 
         pushCorrection({
-          id:'CORR-'+(i+1),fixedId:'',originalDate:d,originalTime:t,action,newDate,
+          id:'CORR-'+(i+1),fixedId:'',originalDate:d,originalTime:t,originalEndTime:parseTimeRange(r[h['原時間']]).end,action,newDate,
           newTime:parseTimeRange(r[h['新時間']]).start||timeKey(r[h['新時間']]),newEndTime:parseTimeRange(r[h['新時間']]).end,
           student,course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:'',
           note,source:'課程校正'
@@ -638,6 +638,7 @@ function fullTime(start, end){
 function buildRows(fixed, adjusts, fromDate, days){
   const out=[],byKey=new Map(),dateWide=new Map();
   const toDate=addDays(fromDate,days-1);
+  const allStudentNames=Array.from(new Set((fixed||[]).flatMap(x=>normalizeMemberList(splitClassRoster(x.student).students))));
   const inWindow=d=>!!d&&d>=fromDate&&d<=toDate;
   const sourcePriority=a=>{
     const s=str(a.source);
@@ -717,7 +718,10 @@ function buildRows(fixed, adjusts, fromDate, days){
       };
       const wide=dateWide.get(d);
       const k=d+'|'+compact(f.student)+'|'+timeKey(f.time);
-      const adj=byKey.get(k)||[];
+      const directAdjustments=byKey.get(k)||[];
+      const aliasAdjustments=orderedAdjusts.filter(a=>a.originalDate===d&&timeKey(a.originalTime)===timeKey(f.time)&&str(a.student)&&includesStudent(a.student,f.student,allStudentNames));
+      const adj=[...new Set([...directAdjustments,...aliasAdjustments])].sort((a,b)=>
+        actionPriority(a)-actionPriority(b)||sourcePriority(b)-sourcePriority(a));
       let handled=false;
 
       for(const a of adj){
@@ -793,15 +797,14 @@ function buildRows(fixed, adjusts, fromDate, days){
     const action=norm(a.action);
     if(!/改時間|改課|調課|移課/.test(action)||/整日/.test(action)) continue;
     if(/取消|停課|請假/.test(action)) continue;
-    const fixedStudentMembers=normalizeMemberList(splitClassRoster(a.student).students);
     const f=fixed.find(x=>(a.fixedId&&x.id===a.fixedId)||
       (norm(x.weekday)===norm(weekdayLabel(a.originalDate))&&
        timeKey(x.time)===timeKey(a.originalTime)&&
-       (compact(x.student)===compact(a.student)||fixedStudentMembers.includes(str(x.student)))));
+       normalizeMemberList(splitClassRoster(x.student).students).some(name=>includesStudent(a.student,name,allStudentNames))));
     if(!f||!str(f.student)||isUnavailableSlot(f.student)) continue;
     const roster=splitClassRoster(f.student);
     const allMembers=normalizeMemberList(roster.course?roster.students:f.student);
-    const movingStudent=allMembers.some(n=>compact(n)===compact(a.student))?a.student:f.student;
+    const movingStudent=allMembers.find(n=>includesStudent(a.student,n,allStudentNames))||f.student;
     const start=a.newTime||f.time;
     const end=a.newEndTime||parseTimeRange(a.newTime).end||f.endTime;
     out.push({date:a.newDate,weekday:weekdayLabel(a.newDate),time:fullTime(start,end),
