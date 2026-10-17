@@ -1214,7 +1214,7 @@ function makeReminderRows(actual, contacts, templates, settings, fixedTemplateBy
           '謝謝！'
         ].join('\n');
       }
-    }else{
+    }else if(x.template){
       content=safeReplaceTemplate(x.template,{
         學生:x.members || x.student,
         日期:x.dateLabel,
@@ -1225,6 +1225,15 @@ function makeReminderRows(actual, contacts, templates, settings, fixedTemplateBy
         校區:x.site,
         學生成員:x.members || x.student
       });
+    }else{
+      content=[
+        (x.members||x.student)+' 家長您好，提醒您以下課程：',
+        '日期：'+x.dateLabel+'（週'+weekdayLabel(x.date)+'）',
+        '時間：'+(x.timeRange||x.time),
+        '課程：'+(x.course||'課程'),
+        '老師：'+(x.teacher||'待確認'),
+        '校區：'+x.site
+      ].join('\\n');
     }
     return {
       key:id+'|'+x.role+'|'+x.recipient,
@@ -1832,6 +1841,52 @@ function missingActualEndTimeWarnings(actualRows){
   return ['有 '+missing.length+' 筆實際課程缺少下課時間，無法形成完整的 HH:MM-HH:MM；請檢查來源課表／加課時段。例：'+sample];
 }
 
+
+function missingRecipientWarnings(actualRows, contacts, settings){
+  if(!AUTO_CREATE_REMINDERS||!isYes(settings.enabled)) return [];
+  const actual=actualObjects(actualRows||[]);
+  const allStudentNames=Array.from(new Set(actual.flatMap(item=>{
+    const roster=splitClassRoster(item.student);
+    return normalizeMemberList(roster.course?roster.students:item.student);
+  })));
+  const missingParents=new Map(),missingTeachers=new Map();
+  for(const c of actual){
+    if(c.adjustResult==='取消'||!str(c.student)||isUnavailableSlot(c.student)) continue;
+    if(isYes(settings.parentNotify,true)){
+      const roster=splitClassRoster(c.student);
+      const members=normalizeMemberList(roster.course?roster.students:c.student);
+      for(const name of members){
+        const found=(contacts||[]).some(x=>x.role==='家長'&&includesStudent(x.related,name,allStudentNames));
+        if(!found&&!missingParents.has(compact(name))) missingParents.set(compact(name),name+'（'+c.date+' '+c.time+'）');
+      }
+    }
+    if(isYes(settings.teacherNotify,true)){
+      const teacher=str(c.teacher);
+      const found=teacher&&(contacts||[]).some(x=>x.role==='老師'&&compact(x.related)===compact(teacher));
+      if(!found){
+        const display=teacher||'(老師欄空白)';
+        if(!missingTeachers.has(compact(display))) missingTeachers.set(compact(display),display+'（'+c.date+' '+c.time+'）');
+      }
+    }
+  }
+  const warnings=[];
+  if(missingParents.size) warnings.push('有 '+missingParents.size+' 位學生找不到已啟用且可匹配的家長 LINE 聯絡人，家長提醒不會建立；例：'+Array.from(missingParents.values()).slice(0,5).join('、'));
+  if(missingTeachers.size) warnings.push('有 '+missingTeachers.size+' 位老師找不到已啟用且可匹配的 LINE 聯絡人，老師提醒不會建立；例：'+Array.from(missingTeachers.values()).slice(0,5).join('、'));
+  return warnings;
+}
+
+function notificationTemplateWarnings(templates, settings){
+  if(!AUTO_CREATE_REMINDERS||!isYes(settings.enabled)) return [];
+  const warnings=[];
+  if(isYes(settings.parentNotify,true)&&!(templates||[]).some(t=>t.name==='家長一般'&&str(t.content))){
+    warnings.push('訊息模板缺少有效的「家長一般」模板；程式會使用內建預設訊息，請檢查模板內容。');
+  }
+  if(isYes(settings.teacherNotify,true)&&!(templates||[]).some(t=>t.name==='老師通知'&&str(t.content))){
+    warnings.push('訊息模板缺少有效的「老師通知」模板；程式會使用內建預設訊息，請檢查模板內容。');
+  }
+  return warnings;
+}
+
 function missingReminderTimeWarnings(actualRows, contacts, settings){
   if(!AUTO_CREATE_REMINDERS||!isYes(settings.enabled)) return [];
   const missingByDay=new Map();
@@ -1894,6 +1949,8 @@ async function build({fromDate=todayKey(),days=DEFAULT_DAYS}={}){
     ...(sourceSync.warnings||[]),
     ...adjustmentConflictWarnings(adjusts),
     ...actualIntegrityWarnings(actual),
+    ...missingRecipientWarnings(actual,contacts,settings),
+    ...notificationTemplateWarnings(templates,settings),
     ...missingReminderTimeWarnings(actual,contacts,settings),
     ...missingActualEndTimeWarnings(actual)
   ];
@@ -2517,6 +2574,6 @@ app.get('/preview-source',async(req,res)=>{
 
 
 if(require.main===module) app.listen(PORT,()=>console.log(`LINE Course Schedule Manager v1.2 listening on ${PORT}`));
-module.exports={app,isYes,isNo,isObsoleteImportedRow,parseDateFlexible,splitClassRoster,normalizeMemberList,parseRawSchedule,dedupeSourceAdjustments,assignPreviewAdjustmentIds,parseAdjust,parseInlineAdjustments,parseFixed,parseSettings,buildRows,mergeActualRows,makeReminderRows,mergeReminderItems,actualObjects,adjustmentConflictWarnings,actualIntegrityWarnings,shouldPreserveReminderConfirmation,missingReminderTimeWarnings,missingActualEndTimeWarnings,adminAuthorized};
+module.exports={app,isYes,isNo,isObsoleteImportedRow,parseDateFlexible,splitClassRoster,normalizeMemberList,parseRawSchedule,dedupeSourceAdjustments,assignPreviewAdjustmentIds,parseAdjust,parseInlineAdjustments,parseFixed,parseSettings,buildRows,mergeActualRows,makeReminderRows,mergeReminderItems,actualObjects,adjustmentConflictWarnings,actualIntegrityWarnings,missingRecipientWarnings,notificationTemplateWarnings,shouldPreserveReminderConfirmation,missingReminderTimeWarnings,missingActualEndTimeWarnings,adminAuthorized};
 // Safety: do not build or write Google Sheets automatically at startup or on a timer.
 // Use the explicit /build endpoint only after reviewing the source preview.
