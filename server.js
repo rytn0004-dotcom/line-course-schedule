@@ -1295,12 +1295,16 @@ async function syncSourceIntoSchedule(){
   }
   const fixedIdByKey=new Map(matchedFixed.map(x=>[rawFixedLogicalKey(x),x.id]));
   const assignedAdjustments=assignPreviewAdjustmentIds(
-    parsed.adjustments.map(x=>({...x,fixedId:fixedIdByKey.get([
-      norm(x.weekday),
-      parseTimeRange(x.originalTime).start||timeKey(x.originalTime),
-      compact(stripScheduleAnnotation(x.student)),
-      compact(stripScheduleAnnotation(x.teacher))
-    ].join('|'))||x.fixedId||''})),
+    parsed.adjustments.map(x=>({
+      ...x,
+      fixedId:fixedIdByKey.get(rawFixedLogicalKey({
+        weekday:x.weekday,
+        time:x.originalTime||x.time,
+        student:x.student,
+        course:x.course||'',
+        teacher:x.teacher
+      }))||x.fixedId||''
+    })),
     adjustRows
   );
   const adjustToAdd=assignedAdjustments.filter(x=>x.id && !existingAdjustIds.has(x.id));
