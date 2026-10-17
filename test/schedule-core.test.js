@@ -11,7 +11,7 @@ process.env.SCHEDULE_ADMIN_TOKEN = 'test-token';
 
 const {
   isYes, parseDateFlexible, splitClassRoster, buildRows, mergeActualRows,
-  parseAdjust, actualObjects, makeReminderRows
+  parseAdjust, actualObjects, makeReminderRows, missingActualEndTimeWarnings
 } = require('../server');
 
 const weekday = '一';
@@ -240,4 +240,12 @@ test('admin authorization rejects missing or wrong tokens', () => {
   assert.equal(adminAuthorized(request('test-token')), true);
   assert.equal(adminAuthorized(request('wrong-token')), false);
   assert.equal(adminAuthorized(request('')), false);
+});
+
+
+test('missing course end time is reported rather than silently treated as complete', () => {
+  const rows = buildRows([fixed({ endTime: '' })], [], '2026-10-19', 1);
+  const warnings = missingActualEndTimeWarnings(rows);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /缺少下課時間/);
 });
