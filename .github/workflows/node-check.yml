@@ -1,4 +1,4 @@
-name: Node syntax check
+name: Node syntax and parser tests
 
 on:
   push:
@@ -16,3 +16,7 @@ jobs:
           node-version: 20
       - name: Check server syntax
         run: node --check server.js
+      - name: Check pure parsing rules syntax
+        run: node --check source_note_rules.js
+      - name: Run timetable parser rule tests
+        run: npm test
