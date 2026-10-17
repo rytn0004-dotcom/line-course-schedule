@@ -7,7 +7,8 @@ const {
   parseDurationTargetDates,
   parseSameDayTimeChangeNote,
   parseSingleDateOnlyNote,
-  parseTeacherConfirmUntil
+  parseTeacherConfirmUntil,
+  splitWrappedCourseLines
 } = require('./source_note_rules');
 
 for (const key of ['GOOGLE_SHEET_ID','GOOGLE_SERVICE_ACCOUNT_JSON']) {
@@ -1501,14 +1502,13 @@ function classifyRawFontColor(cell, charIndex, themeColors = {}){
 
 function parseRawCourseCell(cell, teacher, weekday, year = new Date().getFullYear(), themeColors = {}){
   const rawText=rawCellText(cell);
-  const lines=[...rawText.matchAll(/[^\r\n]+/g)];
+  const lines=splitWrappedCourseLines(rawText);
   const out=[];
   for(const match of lines){
-    const originalLine=match[0];
+    const originalLine=match.text;
     const line=originalLine.trim();
     if(!line) continue;
-    const leading=originalLine.length-originalLine.trimStart().length;
-    const lineStart=match.index+leading;
+    const lineStart=match.start;
     const tm=line.match(/^(\d{1,2}:?\d{2})\s*[-~～至]\s*(\d{1,2}:?\d{2})\s*(.*)$/);
     if(!tm) continue;
     const start=timeKey(tm[1]), end=timeKey(tm[2]);
