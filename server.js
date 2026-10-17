@@ -1698,6 +1698,22 @@ function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
       continue;
     }
 
+    // A parenthetical can contain both a move note and a second time override after a comma,
+    // e.g. 9/25p調10/5b，10/9 1230-1400. Parse the override independently.
+    const embeddedTimeRe=/(\d{1,2})\/(\d{1,2})\s+(\d{1,2}:?\d{2})\s*[-~～至]\s*(\d{1,2}:?\d{2})/g;
+    let embeddedTime;
+    while((embeddedTime=embeddedTimeRe.exec(rawText))){
+      const d=parseDateFlexible(embeddedTime[1]+'/'+embeddedTime[2],year);
+      const start=timeKey(embeddedTime[3]),end=timeKey(embeddedTime[4]);
+      if(d&&start&&end){
+        add({
+          originalDate:d,originalTime:item.time,action:'改時間',
+          newDate:d,newTime:start+'-'+end,
+          note:rawText+'（調整後時段 '+start+'-'+end+'）'
+        });
+      }
+    }
+
     // Course/subject change on an explicit date, e.g. 10/15改上地理.
     const courseChange=rawText.match(/(?:^|[^0-9])(\d{1,2})\/(\d{1,2})\s*改上\s*(.+)$/);
     if(courseChange){
