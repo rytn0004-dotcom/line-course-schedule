@@ -11,7 +11,7 @@ process.env.SCHEDULE_ADMIN_TOKEN = 'test-token';
 
 const {
   isYes, parseDateFlexible, splitClassRoster, buildRows, mergeActualRows,
-  parseAdjust, actualObjects, makeReminderRows, missingActualEndTimeWarnings
+  parseAdjust, parseInlineAdjustments, actualObjects, makeReminderRows, missingActualEndTimeWarnings
 } = require('../server');
 
 const weekday = '一';
@@ -271,4 +271,16 @@ test('single-course adjustment can override course and teacher without changing 
   assert.equal(moved[11], '已調課');
   assert.equal(unrelated[5], '數學');
   assert.equal(unrelated[6], '李老師');
+});
+
+
+test('fixed-course note leave range supports the abbreviated end day form', () => {
+  const adjustments = parseInlineAdjustments([fixed({
+    id: 'FS-LEAVE',
+    student: '芯瑜',
+    rawTime: '18:30-20:00',
+    note: '(9/25~27p)'
+  })], '2026-09-01');
+  const dates = adjustments.filter(x => x.action === '請假').map(x => x.originalDate).sort();
+  assert.deepEqual(dates, ['2026-09-25', '2026-09-26', '2026-09-27']);
 });
