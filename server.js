@@ -667,7 +667,7 @@ function buildRows(fixed, adjusts, fromDate, days){
             handled=true;
             break;
           }
-          if(/改時間|改課|調課|移課/.test(action)){
+          if(/改時間|改課|調課|移課|代課/.test(action)){
             const nd=a.newDate||d,nt=a.newTime||f.time;
             out.push({
               ...base,date:nd,weekday:weekdayLabel(nd),time:nt,
@@ -1799,6 +1799,19 @@ function parseRawPurpleCourse(item, year = new Date().getFullYear()){
   }];
 }
 
+function sourceTeacherCourseOverride(value){
+  const source=str(value);
+  const aliases=[
+    {patterns:[/詔鈞代/,/代詔鈞/,/詔鈞(?=(?:國文|數學|理化|物理|化學|英文|生物|自然|社會))/],teacher:'楊詔鈞'},
+    {patterns:[/佳盈代/,/代佳盈/,/佳盈(?=(?:國文|數學|理化|物理|化學|英文|生物|自然|社會))/],teacher:'吳佳盈'},
+    {patterns:[/維軒代/,/代維軒/,/維軒(?=(?:國文|數學|理化|物理|化學|英文|生物|自然|社會))/],teacher:'林維軒'},
+    {patterns:[/政銓代/,/代政銓/,/政銓(?=(?:國文|數學|理化|物理|化學|英文|生物|自然|社會))/],teacher:'黃政銓'}
+  ];
+  const found=aliases.find(x=>x.patterns.some(re=>re.test(source)));
+  const courseMatch=source.match(/(?:詔鈞|佳盈|維軒|政銓)\s*(國文|數學|理化|物理|化學|英文|生物|自然|社會)/);
+  return {teacher:found?.teacher||'',course:courseMatch?str(courseMatch[1]):''};
+}
+
 function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
   const out=[];
   const seen=new Set();
@@ -1819,35 +1832,40 @@ function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
   for(const note of item.annotations||[]){
     const rawText=str(note);
     if(!rawText)continue;
+    const override=sourceTeacherCourseOverride(rawText);
+    const targetTeacher=override.teacher||item.teacher;
+    const targetCourse=override.course||item.course;
 
     // Same-day time change: 10/9改1030~1230.
     const sameDay=parseSameDayTimeChangeNote(rawText,year);
     if(sameDay){
       add({
-        originalDate:sameDay.date,originalTime:item.time,action:'改時間',
+        originalDate:sameDay.date,originalTime:item.time,
+        action:override.teacher?'代課':'改時間',
         newDate:sameDay.date,newTime:sameDay.start+'-'+sameDay.end,
+        teacher:targetTeacher,course:targetCourse,
         note:rawText+'（調整後時段 '+sameDay.start+'-'+sameDay.end+'）'
       });
       continue;
     }
 
-    // Date plus explicit time: 10/9 0900-1030. Keep the complete time range.
+    // Date plus explicit time: 10/9 0900-1030. Keep the complete range and any substitute teacher.
     const datedTime=rawText.match(/^\s*(\d{1,2})\/(\d{1,2})\s+(\d{1,2}:?\d{2})\s*[-~～至]\s*(\d{1,2}:?\d{2})(?:\s*(.*))?$/);
     if(datedTime){
       const d=parseDateFlexible(datedTime[1]+'/'+datedTime[2],year);
       const start=timeKey(datedTime[3]),end=timeKey(datedTime[4]);
       if(d&&start&&end){
         add({
-          originalDate:d,originalTime:item.time,action:'改時間',
+          originalDate:d,originalTime:item.time,action:override.teacher?'代課':'改時間',
           newDate:d,newTime:start+'-'+end,
+          teacher:targetTeacher,course:targetCourse,
           note:rawText+'（原時段 '+fullRange+'；調整後 '+start+'-'+end+'）'
         });
       }
       continue;
     }
 
-    // A parenthetical can contain both a move note and a second time override after a comma,
-    // e.g. 9/25p調10/5b，10/9 1230-1400. Parse the override independently.
+    // A parenthetical can contain a move note and a second time override after a comma.
     const embeddedTimeRe=/(\d{1,2})\/(\d{1,2})\s+(\d{1,2}:?\d{2})\s*[-~～至]\s*(\d{1,2}:?\d{2})/g;
     let embeddedTime;
     while((embeddedTime=embeddedTimeRe.exec(rawText))){
@@ -1855,14 +1873,15 @@ function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
       const start=timeKey(embeddedTime[3]),end=timeKey(embeddedTime[4]);
       if(d&&start&&end){
         add({
-          originalDate:d,originalTime:item.time,action:'改時間',
+          originalDate:d,originalTime:item.time,action:override.teacher?'代課':'改時間',
           newDate:d,newTime:start+'-'+end,
+          teacher:targetTeacher,course:targetCourse,
           note:rawText+'（調整後時段 '+start+'-'+end+'）'
         });
       }
     }
 
-    // Course/subject change on an explicit date, e.g. 10/15改上地理.
+    // Explicit subject/course change on a date, e.g. 10/15改上地理.
     const courseChange=rawText.match(/(?:^|[^0-9])(\d{1,2})\/(\d{1,2})\s*改上\s*(.+)$/);
     if(courseChange){
       const d=parseDateFlexible(courseChange[1]+'/'+courseChange[2],year);
@@ -1871,13 +1890,14 @@ function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
         add({
           originalDate:d,originalTime:item.time,action:'改課',
           newDate:d,newTime:fullRange,course,
+          teacher:targetTeacher,
           note:rawText+'（該日課程改為 '+course+'）'
         });
       }
       continue;
     }
 
-    // Move source date to one or more explicit target dates, e.g. 10/1p調10/8b、10/15b、10/22b.
+    // Move source date to one or more target dates; preserve any explicit substitute/subject suffix.
     const move=rawText.match(/(\d{1,2})\/(\d{1,2})[^()]*?調\s*(\d{1,2})\/(\d{1,2})/);
     if(move){
       const from=parseDateFlexible(move[1]+'/'+move[2],year);
@@ -1893,7 +1913,6 @@ function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
       let targetMatch;
       while((targetMatch=tailRe.exec(tail))){
         const after=tail.slice(tailRe.lastIndex);
-        // A comma followed by a separate date/time override is not another move target.
         if(/^\s+\d{1,2}:?\d{2}\s*[-~～至]/.test(after))continue;
         const d=parseDateFlexible(targetMatch[1]+'/'+targetMatch[2],year);
         if(d&&!targets.includes(d))targets.push(d);
@@ -1903,46 +1922,46 @@ function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
         add({
           originalDate:from,originalTime:item.time,action:'調課',
           newDate:to,newTime:movedRange,
+          teacher:targetTeacher,course:targetCourse,
           note:rawText+(duration?'（調課後時段 '+movedRange+'）':'')
         });
       }
       continue;
     }
 
-    // A standalone p marker cancels this date; p調 was already handled as a move.
+    // Standalone p marks absence; p調 was already handled as a move.
     const absenceRe=/(\d{1,2})\/(\d{1,2})\s*p(?!\s*調)(?=$|[^a-z0-9])/gi;
     let m;
     while((m=absenceRe.exec(rawText))){
       const d=parseDateFlexible(m[1]+'/'+m[2],year);
       if(d)add({
         originalDate:d,originalTime:item.time,action:'請假',
-        newDate:d,newTime:fullRange,note:rawText
+        newDate:d,newTime:fullRange,teacher:targetTeacher,course:targetCourse,note:rawText
       });
     }
 
-    // Definite date-specific extensions: 10/3加時一次30min / 10/8加30分.
+    // Definite date-specific extensions.
     const extension=rawText.match(/(?:加時(?:一次)?\s*(\d{1,3})\s*(?:min(?:ute)?s?|分)|加\s*(\d{1,3})\s*分)/i);
     if(extension&&!move){
       const dateMatch=rawText.match(/(\d{1,2})\/(\d{1,2})/);
       const minutes=Number(extension[1]||extension[2]||30);
       const d=dateMatch?parseDateFlexible(dateMatch[1]+'/'+dateMatch[2],year):'';
       const end=addMinutesToTime(item.endTime,minutes);
-      if(d&&end){
-        add({
-          originalDate:d,originalTime:item.time,action:'延長時間',
-          newDate:d,newTime:item.time+'-'+end,
-          note:rawText+'（加時 '+minutes+' 分鐘；調整後 '+item.time+'-'+end+'）'
-        });
-      }
+      if(d&&end)add({
+        originalDate:d,originalTime:item.time,action:'延長時間',
+        newDate:d,newTime:item.time+'-'+end,
+        teacher:targetTeacher,course:targetCourse,
+        note:rawText+'（加時 '+minutes+' 分鐘；調整後 '+item.time+'-'+end+'）'
+      });
     }
 
-    // A date-only make-up/addition is a one-off, never a new recurring fixed course.
+    // Date-only make-up/addition is a one-off, never a recurring fixed class.
     const addMatch=rawText.match(/(\d{1,2})\/(\d{1,2})[^()（）]*?(?:補課|加課)/);
     if(addMatch){
       const d=parseDateFlexible(addMatch[1]+'/'+addMatch[2],year);
       if(d)add({
         originalDate:'',originalTime:'',action:'補課',
-        newDate:d,newTime:fullRange,note:rawText
+        newDate:d,newTime:fullRange,teacher:targetTeacher,course:targetCourse,note:rawText
       });
     }
   }
@@ -2116,11 +2135,21 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
 
   // Avoid duplicate destination lessons when both the source move and a destination row describe the same class.
   const deduped=[],byTarget=new Map();
-  const priority=a=>a.action==='調課'?4:a.action==='改時間'?4:a.action==='代課'?3:a.action==='補課'?1:2;
+  const priority=a=>
+    (a.newDate&&a.weekday===weekdayLabel(a.newDate)?100:0)+
+    (str(a.course)?20:0)+
+    (a.originalDate?10:0)+
+    (a.action==='調課'?4:a.action==='改時間'?4:a.action==='代課'?3:a.action==='補課'?1:2);
   for(const adj of adjustments){
     if(!adj.newDate||!adj.student){deduped.push(adj);continue;}
     const isCancel=/^(請假|取消|停課)$/.test(adj.action);
-    const key=[isCancel?'CANCEL':'TARGET',adj.newDate,adj.newTime,compact(adj.student),compact(adj.course||''),compact(adj.teacher||''),compact(normalizeSite(adj.site))].join('|');
+    const startTime=parseTimeRange(adj.newTime).start||timeKey(adj.newTime)||str(adj.newTime);
+    const key=[
+      isCancel?'CANCEL':'TARGET',
+      adj.newDate,startTime,
+      compact(normalizeStudentNameForContact(adj.student)),
+      compact(normalizeSite(adj.site))
+    ].join('|');
     const oldIndex=byTarget.get(key);
     if(oldIndex===undefined){byTarget.set(key,deduped.length);deduped.push(adj);}
     else if(priority(adj)>priority(deduped[oldIndex]))deduped[oldIndex]=adj;
