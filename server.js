@@ -902,8 +902,9 @@ function buildRows(fixed, adjusts, fromDate, days){
   return final;
 }
 
-function mergeActualRows(rows, previousRows, fromDate, toDate){
-  const previous=(previousRows||[]).slice(2).filter(row=>Array.isArray(row)&&row.some(value=>str(value)!==''));
+function mergeActualRows(rows, previousRows, fromDate, toDate, headerRowIndex=1){
+  const dataStartIndex=Math.max(0,Number.isInteger(headerRowIndex)?headerRowIndex+1:2);
+  const previous=(previousRows||[]).slice(dataStartIndex).filter(row=>Array.isArray(row)&&row.some(value=>str(value)!==''));
   const inWindow=row=>{
     const date=dateKey(row?.[1]);
     return isValidDateKey(date)&&date>=fromDate&&date<=toDate;
@@ -946,16 +947,17 @@ async function writeActual(rows, previousRows=[], fromDate=todayKey(), toDate=fr
       valueInputOption:'RAW',requestBody:{values:[wantedAttendanceHeaders]}
     }));
   }
-  const {merged,previousDataCount}=mergeActualRows(rows,previousRows,fromDate,toDate);
-  const lastExistingDataRow=Math.max(2,(previousRows||[]).length);
+  const {merged,previousDataCount}=mergeActualRows(rows,previousRows,fromDate,toDate,headerIndex);
+  const firstDataRow=headerIndex+2;
+  const lastExistingDataRow=Math.max(headerIndex+1,(previousRows||[]).length);
+  const newLastRow=headerIndex+1+merged.length;
   if(merged.length){
     await retry('write 實際課程',()=>sheets.spreadsheets.values.update({
       spreadsheetId:SHEET_ID,
-      range:qsheet('實際課程')+'!A3:O'+(merged.length+2),
+      range:qsheet('實際課程')+'!A'+firstDataRow+':O'+newLastRow,
       valueInputOption:'RAW',requestBody:{values:merged}
     }));
   }
-  const newLastRow=merged.length+2;
   if(lastExistingDataRow>newLastRow){
     await retry('clear stale tail 實際課程',()=>sheets.spreadsheets.values.clear({
       spreadsheetId:SHEET_ID,
@@ -1339,15 +1341,17 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
 
   for(const u of updates){
     batchData.push({
-      range:`${qsheet('課程提醒')}!A${u.rowNumber}:${String.fromCharCode(64+Math.min(width,26))}${u.rowNumber}`,
+      range:`${qsheet('課程提醒')}!A${u.rowNumber}:${columnLetter(width)}${u.rowNumber}`,
       values:[u.values]
     });
   }
 
   if(append.length){
-    const startRow=parsed.rows.length ? Math.max(...parsed.rows.map(r=>r.rowIndex))+1 : (parsed.headerRow>=0 ? parsed.headerRow+2 : 2);
+    // 以實際讀取到的最後非空列定位追加位置；不能只看帶有提醒 ID 的列，
+    // 否則可能覆寫沒有 ID 但仍有人工內容的列。
+    const startRow=Math.max((reminderRows||[]).length+1,parsed.headerRow>=0 ? parsed.headerRow+2 : 2);
     batchData.push({
-      range:`${qsheet('課程提醒')}!A${startRow}:${String.fromCharCode(64+Math.min(width,26))}${startRow+append.length-1}`,
+      range:`${qsheet('課程提醒')}!A${startRow}:${columnLetter(width)}${startRow+append.length-1}`,
       values:append
     });
   }
@@ -2279,7 +2283,8 @@ async function readRawSourcePreview(){
 
 async function buildSourcePreview(year = new Date().getFullYear()){
   const {rawRows,fixedRows,adjustRows,themeColors,sourceSheetId,sourceSheetTitle,sourceSpreadsheetId}=await readRawSourcePreview();
-  const parsed=parseRawSchedule(rawRows,year,themeColors);
+  const previewReferenceDate=Number(year)===Number(todayKey().slice(0,4))?todayKey():String(Number(year))+'-01-01';
+  const parsed=parseRawSchedule(rawRows,year,themeColors,previewReferenceDate);
   const fixed=matchRawFixedIds(parsed.fixed,fixedRows);
   const fixedIdByKey=new Map(fixed.map(x=>[rawFixedLogicalKey(x),x.id]));
   const adjustments=assignPreviewAdjustmentIds(parsed.adjustments.map(x=>({
@@ -2306,7 +2311,8 @@ async function buildSourcePreview(year = new Date().getFullYear()){
     redCount:parsed.redItems.length,unclassifiedCount:parsed.unclassifiedItems.length,
     fixed:fixed.slice(0,300),adjustments:adjustments.slice(0,300),
     redItems:parsed.redItems.slice(0,200),
-    unclassifiedItems:parsed.unclassifiedItems.slice(0,200)
+    unclassifiedItems:parsed.unclassifiedItems.slice(0,200),
+    teacherNotes:parsed.teacherNotes.slice(0,100)
   };
 }
 
