@@ -11,7 +11,7 @@ process.env.SCHEDULE_ADMIN_TOKEN = 'test-token';
 
 const {
   isYes, isObsoleteImportedRow, parseDateFlexible, splitClassRoster, buildRows, mergeActualRows,
-  parseRawSchedule, assignPreviewAdjustmentIds, parseAdjust, parseInlineAdjustments, parseFixed, actualObjects, makeReminderRows, missingActualEndTimeWarnings
+  parseRawSchedule, assignPreviewAdjustmentIds, parseAdjust, parseInlineAdjustments, parseFixed, actualObjects, makeReminderRows, adjustmentConflictWarnings, actualIntegrityWarnings, missingActualEndTimeWarnings
 } = require('../server');
 
 const weekday = '一';
@@ -368,6 +368,39 @@ test('mergeActualRows respects the actual header row instead of always assuming 
   assert.equal(merged.previousDataCount, 1);
   assert.equal(merged.merged.length, 1);
   assert.equal(merged.merged[0][1], '2026-12-01');
+});
+
+
+test('actual course integrity warns about duplicates and attendance-time mismatches', () => {
+  const row = [
+    'COURSE-A', '2026-10-17', '六', '11:00-12:30', '苡安', '', '鄭雅方',
+    '愛學館信義光復校', '調課', '', 'ADJ094', '新增調課', '', '11:00', '12:30'
+  ];
+  const duplicate = row.slice();
+  duplicate[0] = 'COURSE-B';
+  const mismatched = row.slice();
+  mismatched[0] = 'COURSE-C';
+  mismatched[14] = '12:00';
+  const warnings = actualIntegrityWarnings([row, duplicate, mismatched]);
+  assert.ok(warnings.some(w => /疑似存在重複列/.test(w)));
+  assert.ok(warnings.some(w => /N\/O 出勤時間欄/.test(w)));
+});
+
+test('conflicting adjustments appear in the build warning helper', () => {
+  const warnings = adjustmentConflictWarnings([
+    { id: 'ADJ-A', originalDate: '2026-10-09', originalTime: '18:30', student: '昀瑄', action: '改時間', newDate: '2026-10-09', newTime: '09:00', newEndTime: '10:30', source: '課程校正' },
+    { id: 'ADJ-B', originalDate: '2026-10-09', originalTime: '18:30', student: '昀瑄', action: '改時間', newDate: '2026-10-09', newTime: '10:00', newEndTime: '11:30', source: '固定課表備註' }
+  ]);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /昀瑄 2026-10-09 18:30/);
+  assert.match(warnings[0], /ADJ-A.*ADJ-B/);
+});
+
+test('actual course rows sort chronologically by numeric start time', () => {
+  const late = ['LATE', '2026-10-17', '六', '11:00-12:30', '晚班學生', '', '老師', '校區', '固定課表', '', '', '無', '', '11:00', '12:30'];
+  const early = ['EARLY', '2026-10-17', '六', '09:00-10:30', '早班學生', '', '老師', '校區', '固定課表', '', '', '無', '', '09:00', '10:30'];
+  const result = mergeActualRows([late, early], [], '2026-10-17', '2026-10-17');
+  assert.deepEqual(result.merged.map(row => row[0]), ['EARLY', 'LATE']);
 });
 
 test('missing course end time is reported rather than silently treated as complete', () => {
