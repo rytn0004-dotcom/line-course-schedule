@@ -1242,24 +1242,6 @@ async function syncSourceIntoSchedule(){
     row[fh['校區']]=DEFAULT_SITE;
     fixedUpdates.push({rowNumber:old.rowNumber,values:row.slice(0,fixedHeaders.length)});
   }
-  if(fixedUpdates.length){
-    await retry('correct generated fixed schedule rows',()=>sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId:SHEET_ID,
-      requestBody:{valueInputOption:'RAW',data:fixedUpdates.map(u=>({
-        range:qsheet('固定課表')+'!A'+u.rowNumber+':'+columnLetter(fixedHeaders.length)+u.rowNumber,
-        values:[u.values]
-      }))}
-    }));
-  }
-  if(fixedOutput.length){
-    const startRow=fixedRows.length+1;
-    await retry('append source fixed schedule',()=>sheets.spreadsheets.values.update({
-      spreadsheetId:SHEET_ID,
-      range:qsheet('固定課表')+'!A'+startRow+':'+columnLetter(fixedHeaders.length)+(startRow+fixedOutput.length-1),
-      valueInputOption:'RAW',requestBody:{values:fixedOutput}
-    }));
-  }
-
   const adjustHeaders=(adjustRows[adjustHeaderRow]||[]).map(str);
   const ah=hmap(adjustHeaders);
   const existingAdjustIds=new Set();
@@ -1291,12 +1273,33 @@ async function syncSourceIntoSchedule(){
     set('備註',x.note||'來源：開學課表自動解析');
     return row;
   });
+  const sourceWriteData=[];
+  for(const u of fixedUpdates){
+    sourceWriteData.push({
+      range:qsheet('固定課表')+'!A'+u.rowNumber+':'+columnLetter(fixedHeaders.length)+u.rowNumber,
+      values:[u.values]
+    });
+  }
+  if(fixedOutput.length){
+    const start=fixedRows.length+1;
+    sourceWriteData.push({
+      range:qsheet('固定課表')+'!A'+start+':'+columnLetter(fixedHeaders.length)+(start+fixedOutput.length-1),
+      values:fixedOutput
+    });
+  }
   if(adjustOutput.length){
     const start=adjustRows.length+1;
-    await retry('append source adjustments',()=>sheets.spreadsheets.values.update({
-      spreadsheetId:SHEET_ID,
+    sourceWriteData.push({
       range:qsheet('調課課程')+'!A'+start+':'+columnLetter(adjustHeaders.length)+(start+adjustOutput.length-1),
-      valueInputOption:'RAW',requestBody:{values:adjustOutput}
+      values:adjustOutput
+    });
+  }
+  // 將固定課表修正、新增固定課表與新增調課合併為單一 Sheets 寫入請求，
+  // 避免中途 API 失敗時只完成一半來源同步。
+  if(sourceWriteData.length){
+    await retry('batch sync source schedule',()=>sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId:SHEET_ID,
+      requestBody:{valueInputOption:'RAW',data:sourceWriteData}
     }));
   }
   return {
