@@ -186,7 +186,7 @@ function previousReminderSlot(courseDate, settings){
   if (sendWd === '日') sendDate = addDays(sendDate, -1), sendWd = weekdayLabel(sendDate);
   const key = `send_${sendWd}`;
   const sendTime = settings[key] || '';
-  return {sendDate, sendTime};
+  return {sendDate, sendTime:timeKey(sendTime)};
 }
 function safeReplaceTemplate(t, values){
   let out = str(t);
@@ -744,6 +744,22 @@ function buildRows(fixed, adjusts, fromDate, days){
         }
       }
       if(!handled) out.push(base);
+    }
+  }
+
+  for(const a of orderedAdjusts){
+    if(!a.originalDate||inWindow(a.originalDate)||!inWindow(a.newDate)||str(a.student)) continue;
+    const action=norm(a.action);
+    if(!/整日/.test(action)||!/(?:調課|移課|改課)/.test(action)) continue;
+    const target=extractMoveDate(a.action,a.originalDate,a.originalDate)||a.newDate;
+    if(!inWindow(target)||target===a.originalDate) continue;
+    for(const f of fixed){
+      if(!str(f.student)||isUnavailableSlot(f.student)||norm(f.weekday)!==norm(weekdayLabel(a.originalDate))) continue;
+      if(f.until&&isValidDateKey(f.until)&&a.originalDate>f.until) continue;
+      out.push({date:target,weekday:weekdayLabel(target),time:fullTime(f.time,f.endTime),
+        student:f.student,course:f.course,teacher:f.teacher,site:f.site,source:'調課',
+        fixedId:f.id,adjustId:a.id||'DATE-MOVE-'+a.originalDate+'-'+target,
+        adjustResult:'已調課',note:a.note||('整日調課：'+a.originalDate+' → '+target),template:f.template||''});
     }
   }
 
@@ -1527,15 +1543,46 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
   };
 }
 
+function missingReminderTimeWarnings(actualRows, contacts, settings){
+  if(!AUTO_CREATE_REMINDERS||!isYes(settings.enabled)) return [];
+  const missingByDay=new Map();
+  const add=(day,key)=>{
+    if(!missingByDay.has(day)) missingByDay.set(day,new Set());
+    missingByDay.get(day).add(key);
+  };
+  for(const c of actualObjects(actualRows)){
+    if(c.adjustResult==='取消'||!c.student||isUnavailableSlot(c.student)) continue;
+    const slot=previousReminderSlot(c.date,settings);
+    if(slot.sendTime) continue;
+    const day=weekdayLabel(slot.sendDate);
+    if(isYes(settings.parentNotify,true)){
+      const roster=splitClassRoster(c.student);
+      const members=normalizeMemberList(roster.course?roster.students:c.student);
+      for(const name of members){
+        for(const person of contacts.filter(x=>x.role==='家長'&&includesStudent(x.related,name))){
+          add(day,['家長',compact(person.name),c.date,c.time,compact(c.teacher),compact(c.site)].join('|'));
+        }
+      }
+    }
+    if(isYes(settings.teacherNotify,true)){
+      for(const person of contacts.filter(x=>x.role==='老師'&&compact(x.related)===compact(c.teacher))){
+        add(day,['老師',compact(person.name),c.date,compact(c.teacher),compact(c.site)].join('|'));
+      }
+    }
+  }
+  return Array.from(missingByDay.entries()).filter(([,keys])=>keys.size)
+    .map(([day,keys])=>'週'+day+'發送時間是空的，已略過 '+keys.size+' 筆提醒');
+}
+
 async function build({fromDate=todayKey(),days=DEFAULT_DAYS}={}){
   if(!isValidDateKey(fromDate)) throw new Error('fromDate 必須是有效的 YYYY-MM-DD 日期');
   if(!Number.isInteger(days)||days<1||days>180) throw new Error('days 必須是 1 到 180 的整數');
-  const sourceSync=await syncSourceIntoSchedule();
+  const sourceSync=await syncSourceIntoSchedule(fromDate);
   await ensureSheet('課程提醒');
   await ensureSheetHeaders('課程校正',CORRECTION_HEADERS);
   const [settingsRows,fixedRows,adjustRows,correctionRows,oldActualRows,contactRows,templateRows,reminderRows] = await readSheets();
   const settings=parseSettings(settingsRows);
-  const fixed=parseFixed(fixedRows); const adjusts=[...parseAdjust(adjustRows,correctionRows),...parseInlineAdjustments(fixed)]; const contacts=parseContacts(contactRows); const templates=parseTemplates(templateRows);
+  const fixed=parseFixed(fixedRows,fromDate); const adjusts=[...parseAdjust(adjustRows,correctionRows,fromDate),...parseInlineAdjustments(fixed,fromDate)]; const contacts=parseContacts(contactRows); const templates=parseTemplates(templateRows);
   const fixedTemplateByIdInput=fixed;
   const actual=buildRows(fixed,adjusts,fromDate,days);
 
@@ -1548,29 +1595,34 @@ async function build({fromDate=todayKey(),days=DEFAULT_DAYS}={}){
     fixedMatches:diagFixed.map(f=>({id:f.id,weekday:f.weekday,time:f.time,endTime:f.endTime,until:f.until,course:f.course,teacher:f.teacher,site:f.site,note:f.note})),
     actualMatches:diagActual.map(x=>({courseId:x.courseId,date:x.date,weekday:x.weekday,time:x.time,student:x.student,course:x.course,teacher:x.teacher,site:x.site,source:x.source,fixedId:x.fixedId,adjustId:x.adjustId,adjustResult:x.adjustResult,note:x.note}))
   });
-  await writeActual(actual,oldActualRows);
-  const reminder=AUTO_CREATE_REMINDERS
-    ? await syncReminders(actual,reminderRows,contacts,templates,settings,fromDate,days,fixedTemplateByIdInput)
-    : {expectedCount:0,created:0,updated:0,disabled:0,reminderServiceEnabled:settings.enabled==='是',autoCreateReminders:false,lineSending:false};
-  return {ok:true,fromDate,toDate:addDays(fromDate,days-1),sourceSync,fixedCount:fixed.length,adjustCount:adjusts.length,actualCount:actual.length,reminder};
+  const toDate=addDays(fromDate,days-1);
+  const warnings=missingReminderTimeWarnings(actual,contacts,settings);
+  await writeActual(actual,oldActualRows,fromDate,toDate);
+  const reminder=await syncReminders(actual,reminderRows,contacts,templates,settings,fromDate,days,fixedTemplateByIdInput);
+  return {ok:true,fromDate,toDate,sourceSync,fixedCount:fixed.length,adjustCount:adjusts.length,actualCount:actual.length,reminder,warnings};
 }
 
 let lastBuild={status:'not_run'};
 let buildInProgress=null;
 app.get('/health',(req,res)=>res.json({ok:true,service:'line-course-schedule-manager-v1.2',timezone:TZ,lastBuild}));
 async function buildOnce(options){
-  if(buildInProgress) return buildInProgress;
-  buildInProgress=build(options).finally(()=>{ buildInProgress=null; });
-  return buildInProgress;
+  if(buildInProgress) throw Object.assign(new Error('已有 /build 正在執行；本次參數沒有被覆蓋，請稍後重新送出。'),{statusCode:409});
+  const task=build(options);
+  buildInProgress=task;
+  try { return await task; }
+  finally { if(buildInProgress===task) buildInProgress=null; }
 }
 
 app.get('/build',async(req,res)=>{
+  if(!adminAuthorized(req)) return res.status(process.env.SCHEDULE_ADMIN_TOKEN?401:503).json({ok:false,error:process.env.SCHEDULE_ADMIN_TOKEN?'未授權，請提供有效的管理員 token。':'尚未設定 SCHEDULE_ADMIN_TOKEN；為保護 Google Sheet，已停用 /build。'});
   try{
     const fromDate=req.query.from || todayKey();
-    const days=Math.min(180,Math.max(1,Number(req.query.days||DEFAULT_DAYS)));
+    const days=req.query.days===undefined?DEFAULT_DAYS:Number(req.query.days);
+    if(!isValidDateKey(fromDate)) return res.status(400).json({ok:false,error:'from 必須是有效的 YYYY-MM-DD 日期。'});
+    if(!Number.isInteger(days)||days<1||days>180) return res.status(400).json({ok:false,error:'days 必須是 1 到 180 的整數。'});
     lastBuild=await buildOnce({fromDate,days}); lastBuild.at=new Date().toISOString();
     res.json(lastBuild);
-  }catch(e){ lastBuild={status:'error',error:e.message,at:new Date().toISOString()}; console.error(e); res.status(500).json(lastBuild); }
+  }catch(e){ lastBuild={status:'error',error:e.message,at:new Date().toISOString()}; console.error(e); res.status(e.statusCode||500).json(lastBuild); }
 });
 
 
@@ -2075,6 +2127,7 @@ async function buildSourcePreview(year = new Date().getFullYear()){
 }
 
 app.get('/preview-source',async(req,res)=>{
+  if(!adminAuthorized(req)) return res.status(process.env.SCHEDULE_ADMIN_TOKEN?401:503).json({ok:false,mode:'preview-only',writesPerformed:false,error:process.env.SCHEDULE_ADMIN_TOKEN?'未授權，請提供有效的管理員 token。':'尚未設定 SCHEDULE_ADMIN_TOKEN；為保護學生與老師資料，已停用 /preview-source。'});
   try{
     const year=Number(req.query.year||new Date().getFullYear());
     res.json(await buildSourcePreview(year));
@@ -2086,6 +2139,7 @@ app.get('/preview-source',async(req,res)=>{
 
 
 
-app.listen(PORT,()=>console.log(`LINE Course Schedule Manager v1.2 listening on ${PORT}`));
+if(require.main===module) app.listen(PORT,()=>console.log(`LINE Course Schedule Manager v1.2 listening on ${PORT}`));
+module.exports={app,isYes,isNo,parseDateFlexible,splitClassRoster,normalizeMemberList,parseAdjust,parseFixed,parseSettings,buildRows,mergeActualRows,makeReminderRows,mergeReminderItems,actualObjects,missingReminderTimeWarnings,adminAuthorized};
 // Safety: do not build or write Google Sheets automatically at startup or on a timer.
 // Use the explicit /build endpoint only after reviewing the source preview.
