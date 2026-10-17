@@ -1746,6 +1746,7 @@ function adjustmentConflictWarnings(adjustments){
   return warnings.slice(0,20);
 }
 
+
 function actualIntegrityWarnings(actualRows){
   const rows=actualRows||[];
   const seen=new Map();
@@ -1753,11 +1754,17 @@ function actualIntegrityWarnings(actualRows){
   const invalidDateSamples=[];
   const invalidTimeSamples=[];
   const inconsistentTimeSamples=[];
+  const studentIntervals=new Map();
+  const teacherIntervals=new Map();
   const minutes=value=>{
     const t=timeKey(value);
     if(!t) return -1;
     const [h,m]=t.split(':').map(Number);
     return h*60+m;
+  };
+  const addInterval=(map,key,item)=>{
+    if(!map.has(key)) map.set(key,new Map());
+    map.get(key).set(item.signature,item);
   };
   for(const row of rows){
     const date=dateKey(row?.[1]);
@@ -1777,12 +1784,41 @@ function actualIntegrityWarnings(actualRows){
         if(duplicateSamples.length<5) duplicateSamples.push(label);
       }else seen.set(key,label);
     }
+    if(isValidDateKey(date)&&start&&end&&minutes(end)>minutes(start)){
+      const interval={date,start,end,startMinute:minutes(start),endMinute:minutes(end),student,course,teacher,site,label};
+      if(student) addInterval(studentIntervals,date+'|'+compact(student),{...interval,signature:[date,start,end,compact(student),compact(course),compact(teacher),compact(site)].join('|')});
+      if(teacher) addInterval(teacherIntervals,date+'|'+compact(teacher),{...interval,signature:[date,start,end,compact(teacher),compact(course),compact(site)].join('|')});
+    }
   }
+  const findOverlaps=(map,entity)=>{
+    const samples=[],seenPairs=new Set();
+    for(const [groupKey,bySignature] of map){
+      const items=Array.from(bySignature.values()).sort((a,b)=>a.startMinute-b.startMinute||a.endMinute-b.endMinute);
+      for(let i=0;i<items.length;i++){
+        for(let j=i+1;j<items.length&&items[j].startMinute<items[i].endMinute;j++){
+          const left=items[i],right=items[j];
+          if(left.signature===right.signature) continue;
+          const pair=[groupKey,left.signature,right.signature].sort().join('~');
+          if(seenPairs.has(pair)) continue;
+          seenPairs.add(pair);
+          if(samples.length<5){
+            const name=entity==='學生'?left.student:left.teacher;
+            samples.push(entity+'「'+name+'」'+left.date+'：'+left.start+'-'+left.end+' 與 '+right.start+'-'+right.end+' 時段重疊');
+          }
+        }
+      }
+    }
+    return {count:seenPairs.size,samples};
+  };
+  const studentOverlaps=findOverlaps(studentIntervals,'學生');
+  const teacherOverlaps=findOverlaps(teacherIntervals,'老師');
   const warnings=[];
   if(duplicateSamples.length) warnings.push('實際課程疑似存在重複列（同日期、時段、學生、課程、老師、校區）：'+duplicateSamples.join('；'));
   if(invalidDateSamples.length) warnings.push('實際課程有 '+invalidDateSamples.length+' 筆日期無法判讀；例：'+invalidDateSamples.slice(0,3).join('；'));
   if(invalidTimeSamples.length) warnings.push('實際課程有 '+invalidTimeSamples.length+' 筆開始時間無效或上下課區間不合理；例：'+invalidTimeSamples.slice(0,3).join('；'));
   if(inconsistentTimeSamples.length) warnings.push('實際課程的「上課時間」與 N/O 出勤時間欄有 '+inconsistentTimeSamples.length+' 筆不一致；例：'+inconsistentTimeSamples.slice(0,3).join('；'));
+  if(studentOverlaps.count) warnings.push('實際課程有 '+studentOverlaps.count+' 組學生上課時段重疊；例：'+studentOverlaps.samples.join('；'));
+  if(teacherOverlaps.count) warnings.push('實際課程有 '+teacherOverlaps.count+' 組老師上課時段重疊；例：'+teacherOverlaps.samples.join('；'));
   return warnings;
 }
 
