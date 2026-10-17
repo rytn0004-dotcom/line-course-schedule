@@ -262,7 +262,7 @@ function parseFixed(rows, referenceDate=todayKey()){
     const r=rows[i]||[]; const id=str(r[h['固定課表ID']]); if(!id) continue;
     const enabledRaw=str(r[h['啟用']]);
     const enabled=isYes(enabledRaw);
-    if(enabled!=='是' && enabled!=='否'){
+    if(!isYes(enabledRaw) && !isNo(enabledRaw)){
       enabledIssues.push({row:i+1,id,student:str(r[h['學生']]),teacher:str(r[h['老師']]),enabledRaw});
     }
     const teacherRaw=str(r[h['老師']]);
@@ -303,7 +303,7 @@ function parseAdjust(rows, correctionRows=[], referenceDate=todayKey()){
     const h=hmap(rows[legacyHr]);
     for(let i=legacyHr+1;i<rows.length;i++){
       const r=rows[i]||[],id=str(r[h['調課ID']]); if(!id)continue;
-      if(h['確認']!==undefined&&norm(r[h['確認']])!=='是')continue;
+      if(h['確認']!==undefined&&!isYes(r[h['確認']]))continue;
       out.push({id,fixedId:str(r[h['原固定課表ID']]),originalDate:parseDateFlexible(r[h['原日期']],referenceDate),originalTime:parseTimeRange(r[h['原時間']]).start||timeKey(r[h['原時間']]),action:str(r[h['動作']]),newDate:parseDateFlexible(r[h['新日期']],referenceDate),newTime:parseTimeRange(r[h['新時間']]).start||timeKey(r[h['新時間']]),newEndTime:parseTimeRange(r[h['新時間']]).end,student:str(r[h['學生']]),course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:str(r[h['新校區']]),note:str(r[h['備註']]),source:'調課課程'});
     }
   } else if(simpleHr>=0){
@@ -569,7 +569,7 @@ function parseContacts(rows){
     const r=rows[i]||[];
     const userId=str(r[h['LINE User ID']]);
     if(!userId) continue;
-    if(norm(r[h['通知啟用']])!=='是') continue;
+    if(!isYes(r[h['通知啟用']])) continue;
     const role=str(r[h['身分']]);
     if(role!=='家長' && role!=='老師') continue;
     out.push({name:str(r[h['姓名']]),role,related:str(r[relationIndex]),userId});
@@ -885,9 +885,11 @@ function chooseTemplate(templates, role, preferred){
 }
 
 function normalizeMemberList(value){
+  const roster=splitClassRoster(value);
+  const source=roster.course?roster.students:value;
   const seen=new Set();
   const out=[];
-  for(const item of split(value)){
+  for(const item of split(source)){
     const name=str(item);
     if(!name) continue;
     const key=compact(name);
@@ -902,17 +904,13 @@ function formatReminderMember(course, student){
   const c=str(course);
   const students=normalizeMemberList(student).join('、');
   if(!students) return c;
-  // 團班保留班別名稱，學生放在括號內，例如：
-  // 生物團班(葉依柔、陳翊森)
-  if(/團班/.test(c)) return `${c}(${students})`;
+  if(/團班/.test(c)) return c+'('+students+')';
   return students;
 }
 
 function mergeReminderItems(items){
   const groups=new Map();
   for(const item of items){
-    // 老師：同一天＋同校區＋同一位老師，只發一則，內含所有時段。
-    // 家長：維持同一時間合併，避免不同時間的課程混在同一則家長通知。
     const normalizedItem={...item,site:normalizeSite(item.site)};
     const key=normalizedItem.role==='老師'
       ? [normalizedItem.role,compact(normalizedItem.recipient),normalizedItem.date,compact(normalizedItem.teacher),compact(normalizedItem.site)].join('|')
@@ -924,52 +922,52 @@ function mergeReminderItems(items){
   const merged=[];
   for(const group of groups.values()){
     const first=group[0];
-    const members=[];
-    const memberKeys=new Set();
-    const courses=[];
-    const courseKeys=new Set();
-    const scheduleByTime=new Map();
-
+    const courses=[],courseKeys=new Set(),studentsByCourse=new Map(),scheduleByTime=new Map();
+    const parentStudents=[],parentKeys=new Set();
     for(const item of group){
-      const member=formatReminderMember(item.course,item.student);
-      const memberKey=compact(member);
-      if(member && !memberKeys.has(memberKey)){
-        memberKeys.add(memberKey);
-        members.push(member);
-      }
-
-      const course=str(item.course);
+      const course=str(item.course)||splitClassRoster(item.student).course;
       const courseKey=compact(course);
-      if(course && !courseKeys.has(courseKey)){
-        courseKeys.add(courseKey);
-        courses.push(course);
-      }
-
-      if(item.role==='老師'){
-        const time=str(item.timeRange)||timeKey(item.time)||str(item.time);
-        if(!time || !member) continue;
-        if(!scheduleByTime.has(time)) scheduleByTime.set(time,[]);
-        const list=scheduleByTime.get(time);
-        if(!list.some(x=>compact(x)===memberKey)) list.push(member);
+      if(course&&!courseKeys.has(courseKey)){ courseKeys.add(courseKey); courses.push(course); }
+      const names=normalizeMemberList(item.student);
+      if(item.role==='家長'){
+        for(const name of names){
+          const k=compact(name);
+          if(!parentKeys.has(k)){parentKeys.add(k);parentStudents.push(name);}
+        }
+      }else{
+        if(!studentsByCourse.has(courseKey)) studentsByCourse.set(courseKey,{course,names:[],seen:new Set()});
+        const entry=studentsByCourse.get(courseKey);
+        for(const name of names){
+          const k=compact(name);
+          if(!entry.seen.has(k)){entry.seen.add(k);entry.names.push(name);}
+        }
+        const time=str(item.timeRange)||fullTime(item.time,item.endTime)||timeKey(item.time)||str(item.time);
+        if(time){
+          if(!scheduleByTime.has(time)) scheduleByTime.set(time,new Map());
+          const timeCourses=scheduleByTime.get(time);
+          if(!timeCourses.has(courseKey)) timeCourses.set(courseKey,{course,names:[],seen:new Set()});
+          const entryAtTime=timeCourses.get(courseKey);
+          for(const name of names){
+            const k=compact(name);
+            if(!entryAtTime.seen.has(k)){entryAtTime.seen.add(k);entryAtTime.names.push(name);}
+          }
+        }
       }
     }
 
+    const renderEntry=entry=>entry.course&&/團班/.test(entry.course)
+      ? entry.course+'('+entry.names.join('、')+')'
+      : entry.names.join('、');
+    const teacherMembers=Array.from(studentsByCourse.values()).map(renderEntry).filter(Boolean);
     const scheduleLines=Array.from(scheduleByTime.entries())
       .sort((a,b)=>a[0].localeCompare(b[0]))
-      .map(([time,list])=>time+' '+list.join('、'))
+      .map(([time,byCourse])=>time+' '+Array.from(byCourse.values()).map(renderEntry).filter(Boolean).join('、'))
       .join('\n');
-
-    merged.push({
-      ...first,
-      student:members.join('、'),
-      course:courses.join('、'),
-      members:members.join('、'),
-      scheduleLines
-    });
+    const members=first.role==='老師'?teacherMembers.join('、'):parentStudents.join('、');
+    merged.push({...first,student:members,course:courses.join('、'),members,scheduleLines});
   }
   return merged;
 }
-
 function reminderGroupId(item){
   // 老師的提醒 ID 不含時間：同一天同校區只維持一個穩定提醒。
   const raw=item.role==='老師'
@@ -987,7 +985,7 @@ function reminderGroupId(item){
 
 function makeReminderRows(actual, contacts, templates, settings, fixedTemplateById){
   const raw=[];
-  const requireConfirm = settings.requireConfirm !== '否';
+  const requireConfirm = isYes(settings.requireConfirm,true);
 
   for(const c of actual){
     if(c.adjustResult==='取消') continue;
@@ -997,10 +995,11 @@ function makeReminderRows(actual, contacts, templates, settings, fixedTemplateBy
     if(!slot.sendDate || !slot.sendTime) continue;
     const dateLabel=c.date.replaceAll('-','/');
 
-    if(settings.parentNotify==='是'){
+    if(isYes(settings.parentNotify,true)){
       // 團班可能同時包含多位學生；家長匹配必須逐一拆開學生姓名，
       // 否則「葉依柔、陳翊森」會被當成單一姓名，導致兩位學生的家長都收不到通知。
-      const studentMembers = normalizeMemberList(c.student);
+      const roster=splitClassRoster(c.student);
+      const studentMembers = normalizeMemberList(roster.course?roster.students:c.student);
       const parentStudents = studentMembers.length ? studentMembers : [c.student];
       for(const studentMember of parentStudents){
         for(const person of contacts.filter(x=>x.role==='家長' && includesStudent(x.related,studentMember))){
@@ -1018,7 +1017,7 @@ function makeReminderRows(actual, contacts, templates, settings, fixedTemplateBy
           userId:person.userId,
           // 家長提醒使用單一學生名稱；課程名稱仍保留原本的團班名稱。
           student:studentMember,
-          course:c.course,
+          course:c.course||roster.course,
           teacher:c.teacher,
           site:c.site,
           template,
@@ -1029,7 +1028,7 @@ function makeReminderRows(actual, contacts, templates, settings, fixedTemplateBy
       }
     }
 
-    if(settings.teacherNotify==='是'){
+    if(isYes(settings.teacherNotify,true)){
       for(const person of contacts.filter(x=>x.role==='老師' && compact(x.related)===compact(c.teacher))){
         const preferred=fixedTemplateById.get(c.fixedId) || '';
         const template=chooseTemplate(templates,'老師',preferred);
@@ -1113,7 +1112,7 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
   await ensureSheet('課程提醒');
   const fixedTemplateById=new Map();
   for(const f of fixedTemplateByIdInput) fixedTemplateById.set(f.id,f.template || '');
-  const expected=makeReminderRows(actualObjects(actualRows),contacts,templates,settings,fixedTemplateById);
+  const expected=(AUTO_CREATE_REMINDERS&&isYes(settings.enabled))?makeReminderRows(actualObjects(actualRows),contacts,templates,settings,fixedTemplateById):[];
   const expectedKeys=new Set(expected.map(x=>x.id+'|'+x.role+'|'+x.recipient));
   const expectedLogicalKeys=new Set(expected.map(x=>{
     if(x.role==='老師'){
@@ -1181,7 +1180,13 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
       // 自動產生的提醒（包含 MERGED- 每日老師提醒）必須同步最新學生成員與訊息內容。
       // 手動建立的提醒（例如 TEST-...）仍保留人工編輯過的訊息。
       if(preserveMsg && !isGeneratedReminder) row[getIdx('訊息內容')]=preserveMsg;
-      if(preserveConfirm) row[getIdx('確認發送')]=preserveConfirm;
+      const hasUserVisibleContent =
+        !!str(row[getIdx('學生/學生成員')]) ||
+        !!str(row[getIdx('課程')]) ||
+        !!str(row[getIdx('訊息內容')]);
+      if(preserveConfirm&&hasUserVisibleContent){
+        row[getIdx('確認發送')]=isYes(preserveConfirm)?'是':(isNo(preserveConfirm)?'否':x.confirm);
+      }
       updates.push({rowNumber:old.rowIndex,values:row});
       updated++;
     }else{
@@ -1247,7 +1252,7 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
       requestBody:{valueInputOption:'RAW',data:batchData}
     }));
   }
-  return {expectedCount:expected.length,created,updated,disabled,reminderServiceEnabled:settings.enabled==='是',lineSending:false};
+  return {expectedCount:expected.length,created,updated,disabled,reminderServiceEnabled:isYes(settings.enabled)&&AUTO_CREATE_REMINDERS,lineSending:false};
 }
 
 
