@@ -1617,45 +1617,133 @@ function parseRawPurpleCourse(item, year = new Date().getFullYear()){
 
 function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
   const out=[];
+  const seen=new Set();
+  const fullRange=item.endTime?item.time+'-'+item.endTime:item.time;
+  const add=values=>{
+    const entry={
+      id:'',fixedId:'',weekday:item.weekday,colorStatus:item.colorStatus,colorHex:item.colorHex,
+      originalDate:'',originalTime:'',action:'',newDate:'',newTime:'',
+      student:item.student,course:item.course,teacher:item.teacher,site:item.site,
+      note:'來源：開學課表；'+values.note,source:'開學課表',...values
+    };
+    const key=[entry.action,entry.originalDate,entry.originalTime,entry.newDate,entry.newTime,compact(entry.student),entry.course||'',entry.teacher||''].join('|');
+    if(seen.has(key))return;
+    seen.add(key);
+    out.push(entry);
+  };
+
   for(const note of item.annotations||[]){
-    // 保留原始空白，避免「10/9 1100-1230」去空白後被誤讀成「10/91 100-1230」。
     const rawText=str(note);
-    const text=rawText.replace(/\s+/g,'');
-    let m;
-    // 日期與新時段之間必須有分隔空白，避免把時間的首位數字併入日期。
-    const sameDayTime=/^(\d{1,2})\/(\d{1,2})\s+(\d{1,2}:?\d{2})[-~～至](\d{1,2}:?\d{2})$/;
-    const sameDayMatch=rawText.match(sameDayTime);
-    if(sameDayMatch){
-      const d=parseDateFlexible(sameDayMatch[1]+'/'+sameDayMatch[2],year);
-      const newStart=timeKey(sameDayMatch[3]), newEnd=timeKey(sameDayMatch[4]);
-      if(d && newStart && newEnd) out.push({id:'',fixedId:'',weekday:item.weekday,colorStatus:item.colorStatus,colorHex:item.colorHex,originalDate:d,originalTime:item.time,action:'改時間',newDate:d,newTime:newStart,student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note+'（調整後時段 '+newStart+'-'+newEnd+'）',source:'開學課表'});
+    if(!rawText)continue;
+
+    // Same-day time change: 10/9改1030~1230.
+    const sameDay=parseSameDayTimeChangeNote(rawText,year);
+    if(sameDay){
+      add({
+        originalDate:sameDay.date,originalTime:item.time,action:'改時間',
+        newDate:sameDay.date,newTime:sameDay.start+'-'+sameDay.end,
+        note:rawText+'（調整後時段 '+sameDay.start+'-'+sameDay.end+'）'
+      });
+      continue;
     }
-    const moveRe=/(\d{1,2})\/(\d{1,2})[^()]*?調\s*(\d{1,2})\/(\d{1,2})/g;
-    while((m=moveRe.exec(text))){
-      const from=parseDateFlexible(m[1]+'/'+m[2],year);
-      const to=parseDateFlexible(m[3]+'/'+m[4],year);
-      if(from && to) out.push({id:'',fixedId:'',weekday:item.weekday,colorStatus:item.colorStatus,colorHex:item.colorHex,originalDate:from,originalTime:item.time,action:'調課',newDate:to,newTime:item.time,student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note,source:'開學課表'});
+
+    // Date plus explicit time: 10/9 0900-1030. Keep the complete time range.
+    const datedTime=rawText.match(/^\s*(\d{1,2})\/(\d{1,2})\s+(\d{1,2}:?\d{2})\s*[-~～至]\s*(\d{1,2}:?\d{2})(?:\s*(.*))?$/);
+    if(datedTime){
+      const d=parseDateFlexible(datedTime[1]+'/'+datedTime[2],year);
+      const start=timeKey(datedTime[3]),end=timeKey(datedTime[4]);
+      if(d&&start&&end){
+        add({
+          originalDate:d,originalTime:item.time,action:'改時間',
+          newDate:d,newTime:start+'-'+end,
+          note:rawText+'（原時段 '+fullRange+'；調整後 '+start+'-'+end+'）'
+        });
+      }
+      continue;
     }
-    // Multiple absence dates may be written as "9/8p、10/6p".
-    // The negative look-ahead excludes a make-up expression such as "9/8p調10/5b".
+
+    // Course/subject change on an explicit date, e.g. 10/15改上地理.
+    const courseChange=rawText.match(/(?:^|[^0-9])(\d{1,2})\/(\d{1,2})\s*改上\s*(.+)$/);
+    if(courseChange){
+      const d=parseDateFlexible(courseChange[1]+'/'+courseChange[2],year);
+      const course=str(courseChange[3]).replace(/[）)]$/,'').trim();
+      if(d&&course){
+        add({
+          originalDate:d,originalTime:item.time,action:'改課',
+          newDate:d,newTime:fullRange,course,
+          note:rawText+'（該日課程改為 '+course+'）'
+        });
+      }
+      continue;
+    }
+
+    // Move source date to one or more explicit target dates, e.g. 10/1p調10/8b、10/15b、10/22b.
+    const move=rawText.match(/(\d{1,2})\/(\d{1,2})[^()]*?調\s*(\d{1,2})\/(\d{1,2})/);
+    if(move){
+      const from=parseDateFlexible(move[1]+'/'+move[2],year);
+      const firstTo=parseDateFlexible(move[3]+'/'+move[4],year);
+      const duration=rawText.match(/[+＋]\s*(\d{1,3})\s*(?:min(?:ute)?s?|分)/i);
+      const movedRange=duration&&item.endTime
+        ? item.time+'-'+(addMinutesToTime(item.endTime,Number(duration[1]))||item.endTime)
+        : fullRange;
+      const targets=[];
+      if(firstTo)targets.push(firstTo);
+      const tail=rawText.slice(move.index+move[0].length);
+      const tailRe=/[、,，]\s*(\d{1,2})\/(\d{1,2})(?:b)?/gi;
+      let targetMatch;
+      while((targetMatch=tailRe.exec(tail))){
+        const after=tail.slice(tailRe.lastIndex);
+        // A comma followed by a separate date/time override is not another move target.
+        if(/^\s+\d{1,2}:?\d{2}\s*[-~～至]/.test(after))continue;
+        const d=parseDateFlexible(targetMatch[1]+'/'+targetMatch[2],year);
+        if(d&&!targets.includes(d))targets.push(d);
+      }
+      for(const to of targets){
+        if(!from||!to)continue;
+        add({
+          originalDate:from,originalTime:item.time,action:'調課',
+          newDate:to,newTime:movedRange,
+          note:rawText+(duration?'（調課後時段 '+movedRange+'）':'')
+        });
+      }
+      continue;
+    }
+
+    // A standalone p marker cancels this date; p調 was already handled as a move.
     const absenceRe=/(\d{1,2})\/(\d{1,2})\s*p(?!\s*調)(?=$|[^a-z0-9])/gi;
+    let m;
     while((m=absenceRe.exec(rawText))){
       const d=parseDateFlexible(m[1]+'/'+m[2],year);
-      if(d && !out.some(x=>x.action==='請假'&&x.originalDate===d&&x.student===item.student&&x.originalTime===item.time)){
-        out.push({id:'',fixedId:'',weekday:item.weekday,colorStatus:item.colorStatus,colorHex:item.colorHex,originalDate:d,originalTime:item.time,action:'請假',newDate:d,newTime:item.time,student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note,source:'開學課表'});
+      if(d)add({
+        originalDate:d,originalTime:item.time,action:'請假',
+        newDate:d,newTime:fullRange,note:rawText
+      });
+    }
+
+    // Definite date-specific extensions: 10/3加時一次30min / 10/8加30分.
+    const extension=rawText.match(/(?:加時(?:一次)?\s*(\d{1,3})\s*(?:min(?:ute)?s?|分)|加\s*(\d{1,3})\s*分)/i);
+    if(extension&&!move){
+      const dateMatch=rawText.match(/(\d{1,2})\/(\d{1,2})/);
+      const minutes=Number(extension[1]||extension[2]||30);
+      const d=dateMatch?parseDateFlexible(dateMatch[1]+'/'+dateMatch[2],year):'';
+      const end=addMinutesToTime(item.endTime,minutes);
+      if(d&&end){
+        add({
+          originalDate:d,originalTime:item.time,action:'延長時間',
+          newDate:d,newTime:item.time+'-'+end,
+          note:rawText+'（加時 '+minutes+' 分鐘；調整後 '+item.time+'-'+end+'）'
+        });
       }
     }
-    const leaveRe=/(\d{1,2})\/(\d{1,2})[^0-9]*(?:請假|p(?:調|$))/gi;
-    while((m=leaveRe.exec(text))){
-      const d=parseDateFlexible(m[1]+'/'+m[2],year);
-      if(d && !/調/.test(text) && !out.some(x=>x.action==='請假'&&x.originalDate===d&&x.student===item.student&&x.originalTime===item.time)){
-        out.push({id:'',fixedId:'',weekday:item.weekday,colorStatus:item.colorStatus,colorHex:item.colorHex,originalDate:d,originalTime:item.time,action:'請假',newDate:d,newTime:item.time,student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note,source:'開學課表'});
-      }
-    }
-    const addRe=/(\d{1,2})\/(\d{1,2})[^0-9]*?(?:補課|加課)/g;
-    while((m=addRe.exec(text))){
-      const d=parseDateFlexible(m[1]+'/'+m[2],year);
-      if(d) out.push({id:'',fixedId:'',weekday:item.weekday,colorStatus:item.colorStatus,colorHex:item.colorHex,originalDate:'',originalTime:'',action:'補課',newDate:d,newTime:item.time,student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note,source:'開學課表'});
+
+    // A date-only make-up/addition is a one-off, never a new recurring fixed course.
+    const addMatch=rawText.match(/(\d{1,2})\/(\d{1,2})[^()（）]*?(?:補課|加課)/);
+    if(addMatch){
+      const d=parseDateFlexible(addMatch[1]+'/'+addMatch[2],year);
+      if(d)add({
+        originalDate:'',originalTime:'',action:'補課',
+        newDate:d,newTime:fullRange,note:rawText
+      });
     }
   }
   return out;
