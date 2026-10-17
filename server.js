@@ -747,7 +747,7 @@ function buildRows(fixed, adjusts, fromDate, days){
             const start=a.newTime||f.time;
             const end=a.newEndTime||parseTimeRange(a.newTime).end||f.endTime;
             out.push({...base,date:nd,weekday:weekdayLabel(nd),time:fullTime(start,end),
-              student:f.student,course:f.course,teacher:f.teacher,site:f.site,source:'調課',
+              student:f.student,course:a.course||f.course,teacher:a.teacher||f.teacher,site:a.site||f.site,source:'調課',
               fixedId:f.id,adjustId:a.id||'MOVE-'+d+'-'+nd,adjustResult:'已調課',note:a.note||''});
           }
           handled=true;
@@ -808,7 +808,7 @@ function buildRows(fixed, adjusts, fromDate, days){
     const start=a.newTime||f.time;
     const end=a.newEndTime||parseTimeRange(a.newTime).end||f.endTime;
     out.push({date:a.newDate,weekday:weekdayLabel(a.newDate),time:fullTime(start,end),
-      student:movingStudent,course:f.course||roster.course,teacher:f.teacher,site:f.site,source:'調課',
+      student:movingStudent,course:a.course||f.course||roster.course,teacher:a.teacher||f.teacher,site:a.site||f.site,source:'調課',
       fixedId:f.id,groupMulti:allMembers.length>1,adjustId:a.id||'MOVE-'+a.originalDate+'-'+a.newDate,adjustResult:'已調課',
       note:a.note||('由 '+a.originalDate+' 調至 '+a.newDate),template:f.template||''});
   }
