@@ -11,7 +11,7 @@ process.env.SCHEDULE_ADMIN_TOKEN = 'test-token';
 
 const {
   isYes, isObsoleteImportedRow, parseDateFlexible, splitClassRoster, buildRows, mergeActualRows,
-  parseRawSchedule, dedupeRawFixedRows, dedupeSourceAdjustments, assignPreviewAdjustmentIds, parseAdjust, parseInlineAdjustments, parseFixed, parseSettings, normalizeWeekday, fixedDataQualityWarnings, actualObjects, makeReminderRows, mergeReminderItems, adjustmentConflictWarnings, actualIntegrityWarnings, missingRecipientWarnings, notificationTemplateWarnings, shouldPreserveReminderConfirmation, missingActualEndTimeWarnings
+  parseRawSchedule, dedupeRawFixedRows, dedupeSourceAdjustments, assignPreviewAdjustmentIds, parseAdjust, parseInlineAdjustments, parseFixed, parseSettings, normalizeWeekday, fixedDataQualityWarnings, unavailableSlotWarnings, actualObjects, makeReminderRows, mergeReminderItems, adjustmentConflictWarnings, actualIntegrityWarnings, missingRecipientWarnings, notificationTemplateWarnings, shouldPreserveReminderConfirmation, missingActualEndTimeWarnings
 } = require('../server');
 
 const weekday = '一';
@@ -364,6 +364,51 @@ test('purple single-course adjustment keeps its end time and does not raise a fa
 });
 
 
+
+
+test('one-day subject-change annotation overrides only that date course', () => {
+  const parsed = parseRawSchedule([
+    ['老師', '星期四'],
+    ['楊詔鈞', { value: '1700-1830翊森(10/15改上地理)' }]
+  ], 2026, {}, '2026-10-17');
+  const change = parsed.adjustments.find(x => x.action === '改課' && x.student === '翊森');
+  assert.ok(change);
+  assert.equal(change.newDate, '2026-10-15');
+  assert.equal(change.course, '地理');
+  assert.equal(change.newTime, '17:00');
+  assert.equal(change.newEndTime, '18:30');
+  const rows = buildRows(parsed.fixed, [change], '2026-10-15', 1);
+  const actual = rows.find(row => row[4] === '翊森');
+  assert.ok(actual);
+  assert.equal(actual[5], '地理');
+  assert.equal(actual[3], '17:00-18:30');
+});
+
+test('source parser distinguishes blocked teacher slots from available empty slots', () => {
+  const parsed = parseRawSchedule([
+    ['老師', '星期三', '星期二'],
+    ['魏弘宇', { value: '1400-1845無法排課' }, { value: '2000-2130' }]
+  ], 2026, {}, '2026-10-17');
+  assert.equal(parsed.unavailableSlots.length, 1);
+  assert.deepEqual(
+    { teacher: parsed.unavailableSlots[0].teacher, weekday: parsed.unavailableSlots[0].weekday, start: parsed.unavailableSlots[0].start, end: parsed.unavailableSlots[0].end },
+    { teacher: '魏弘宇', weekday: '三', start: '14:00', end: '18:45' }
+  );
+  assert.equal(parsed.openSlots.length, 1);
+  const actual = buildRows([fixed({ weekday: '三', time: '16:00', endTime: '17:00', student: '學生甲', teacher: '魏弘宇' })], [], '2026-10-21', 1);
+  const warnings = unavailableSlotWarnings(actual, parsed.unavailableSlots);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /魏弘宇／學生甲 2026-10-21 16:00-17:00/);
+  assert.match(warnings[0], /14:00-18:45/);
+});
+
+test('malformed source time is surfaced as unclassified instead of silently dropped', () => {
+  const parsed = parseRawSchedule([
+    ['老師', '星期一'],
+    ['老師甲', { value: '2500-2600學生甲' }]
+  ], 2026, {}, '2026-10-17');
+  assert.ok(parsed.unclassifiedItems.some(x => /時間格式無效/.test(x.note)));
+});
 
 test('inline source add-course annotation preserves course name, action, and complete time', () => {
   const parsed = parseRawSchedule([
