@@ -1244,7 +1244,6 @@ function makeReminderRows(actual, contacts, templates, settings, fixedTemplateBy
   });;
 }
 
-async 
 function shouldPreserveReminderConfirmation(oldValues, proposedValues, headers){
   const h=hmap(headers);
   const fields=['課程日期','上課時間','發送日期','發送時間','學生/學生成員','課程','老師','校區','訊息內容'];
@@ -1254,7 +1253,7 @@ function shouldPreserveReminderConfirmation(oldValues, proposedValues, headers){
   );
 }
 
-function syncReminders(actualRows, reminderRows, contacts, templates, settings, fromDate, days, fixedTemplateByIdInput){
+async function syncReminders(actualRows, reminderRows, contacts, templates, settings, fromDate, days, fixedTemplateByIdInput){
   await ensureSheet('課程提醒');
   const fixedTemplateById=new Map();
   for(const f of fixedTemplateByIdInput) fixedTemplateById.set(f.id,f.template || '');
