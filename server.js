@@ -679,7 +679,7 @@ function buildRows(fixed, adjusts, fromDate, days){
   for(const a of orderedAdjusts){
     if(!a.originalDate) continue;
     const action=norm(a.action);
-    const isWholeDay=/整日/.test(action)&&!str(a.student)&&!str(a.course)&&!str(a.teacher)&&!str(a.site);
+    const isWholeDay=/整日/.test(action)&&!str(a.student);
     if(isWholeDay && /(?:停課|取消)/.test(action)){
       if(!dateWide.has(a.originalDate)) dateWide.set(a.originalDate,{cancel:true,moves:[]});
       dateWide.get(a.originalDate).cancel=true;
@@ -777,7 +777,7 @@ function buildRows(fixed, adjusts, fromDate, days){
   }
 
   for(const a of orderedAdjusts){
-    if(!a.originalDate||inWindow(a.originalDate)||!inWindow(a.newDate)||str(a.student)||str(a.course)||str(a.teacher)||str(a.site)) continue;
+    if(!a.originalDate||inWindow(a.originalDate)||!inWindow(a.newDate)||str(a.student)) continue;
     const action=norm(a.action);
     if(!/整日/.test(action)||!/(?:調課|移課|改課)/.test(action)) continue;
     const target=extractMoveDate(a.action,a.originalDate,a.originalDate)||a.newDate;
@@ -1633,7 +1633,9 @@ async function build({fromDate=todayKey(),days=DEFAULT_DAYS}={}){
   const toDate=addDays(fromDate,days-1);
   const warnings=missingReminderTimeWarnings(actual,contacts,settings);
   await writeActual(actual,oldActualRows,fromDate,toDate);
-  const reminder=await syncReminders(actual,reminderRows,contacts,templates,settings,fromDate,days,fixedTemplateByIdInput);
+  const reminder=AUTO_CREATE_REMINDERS
+    ? await syncReminders(actual,reminderRows,contacts,templates,settings,fromDate,days,fixedTemplateByIdInput)
+    : {expectedCount:0,created:0,updated:0,disabled:0,reminderServiceEnabled:false,autoCreateReminders:false,lineSending:false};
   return {ok:true,fromDate,toDate,sourceSync,fixedCount:fixed.length,adjustCount:adjusts.length,actualCount:actual.length,reminder,warnings};
 }
 
