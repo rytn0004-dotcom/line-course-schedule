@@ -312,7 +312,7 @@ function parseAdjust(rows, correctionRows=[], referenceDate=todayKey()){
     for(let i=legacyHr+1;i<rows.length;i++){
       const r=rows[i]||[],id=str(r[h['調課ID']]); if(!id)continue;
       if(h['確認']!==undefined&&!isYes(r[h['確認']]))continue;
-      out.push({id,fixedId:str(r[h['原固定課表ID']]),originalDate:parseDateFlexible(r[h['原日期']],referenceDate),originalTime:parseTimeRange(r[h['原時間']]).start||timeKey(r[h['原時間']]),action:str(r[h['動作']]),newDate:parseDateFlexible(r[h['新日期']],referenceDate),newTime:parseTimeRange(r[h['新時間']]).start||timeKey(r[h['新時間']]),newEndTime:parseTimeRange(r[h['新時間']]).end,student:str(r[h['學生']]),course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:str(r[h['新校區']]),note:str(r[h['備註']]),source:'調課課程'});
+      out.push({id,fixedId:str(r[h['原固定課表ID']]),originalDate:parseDateFlexible(r[h['原日期']],referenceDate),originalTime:parseTimeRange(r[h['原時間']]).start||timeKey(r[h['原時間']]),originalEndTime:parseTimeRange(r[h['原時間']]).end,action:str(r[h['動作']]),newDate:parseDateFlexible(r[h['新日期']],referenceDate),newTime:parseTimeRange(r[h['新時間']]).start||timeKey(r[h['新時間']]),newEndTime:parseTimeRange(r[h['新時間']]).end,student:str(r[h['學生']]),course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:str(r[h['新校區']]),note:str(r[h['備註']]),source:'調課課程'});
     }
   } else if(simpleHr>=0){
     const h=hmap(rows[simpleHr]);
@@ -323,7 +323,7 @@ function parseAdjust(rows, correctionRows=[], referenceDate=todayKey()){
       if(!d)continue;
       if(!student && !/整日/.test(action))continue;
       if(!t && !/整日/.test(action))continue;
-      out.push({id:'',fixedId:'',originalDate:d,originalTime:t,action,newDate:parseDateFlexible(r[h['新日期']],referenceDate),newTime:parseTimeRange(r[h['新時間']]).start||timeKey(r[h['新時間']]),newEndTime:parseTimeRange(r[h['新時間']]).end,student,course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:'',note:'',source:'調課課程'});
+      out.push({id:'',fixedId:'',originalDate:d,originalTime:t,originalEndTime:parseTimeRange(r[h['原時間']]).end,action,newDate:parseDateFlexible(r[h['新日期']],referenceDate),newTime:parseTimeRange(r[h['新時間']]).start||timeKey(r[h['新時間']]),newEndTime:parseTimeRange(r[h['新時間']]).end,student,course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:'',note:'',source:'調課課程'});
     }
   }
 
@@ -701,10 +701,15 @@ function buildRows(fixed, adjusts, fromDate, days){
 
   for(let d=fromDate;d<=toDate;d=addDays(d,1)){
     const wd=weekdayLabel(d);
-    for(const f of fixed){
-      if(!str(f.student)||isUnavailableSlot(f.student)) continue;
-      if(f.until&&isValidDateKey(f.until)&&d>f.until) continue;
-      if(norm(f.weekday)!==norm(wd)) continue;
+    for(const sourceFixed of fixed){
+      if(!str(sourceFixed.student)||isUnavailableSlot(sourceFixed.student)) continue;
+      if(sourceFixed.until&&isValidDateKey(sourceFixed.until)&&d>sourceFixed.until) continue;
+      if(norm(sourceFixed.weekday)!==norm(wd)) continue;
+      const classRoster=splitClassRoster(sourceFixed.student);
+      const classMembers=normalizeMemberList(classRoster.course?classRoster.students:sourceFixed.student);
+      const classCourse=sourceFixed.course||classRoster.course;
+      for(const member of classMembers){
+      const f={...sourceFixed,student:member,course:classCourse,groupMulti:classMembers.length>1};
       const base={
         date:d,weekday:wd,time:fullTime(f.time,f.endTime),student:f.student,course:f.course,
         teacher:f.teacher,site:f.site,source:'固定課表',fixedId:f.id,adjustId:'',
@@ -763,6 +768,7 @@ function buildRows(fixed, adjusts, fromDate, days){
         }
       }
       if(!handled) out.push(base);
+      }
     }
   }
 
@@ -787,17 +793,20 @@ function buildRows(fixed, adjusts, fromDate, days){
     const action=norm(a.action);
     if(!/改時間|改課|調課|移課/.test(action)||/整日/.test(action)) continue;
     if(/取消|停課|請假/.test(action)) continue;
-    const members=normalizeMemberList(splitClassRoster(a.student).students);
+    const fixedStudentMembers=normalizeMemberList(splitClassRoster(a.student).students);
     const f=fixed.find(x=>(a.fixedId&&x.id===a.fixedId)||
       (norm(x.weekday)===norm(weekdayLabel(a.originalDate))&&
        timeKey(x.time)===timeKey(a.originalTime)&&
-       (compact(x.student)===compact(a.student)||members.includes(str(x.student)))));
+       (compact(x.student)===compact(a.student)||fixedStudentMembers.includes(str(x.student)))));
     if(!f||!str(f.student)||isUnavailableSlot(f.student)) continue;
+    const roster=splitClassRoster(f.student);
+    const allMembers=normalizeMemberList(roster.course?roster.students:f.student);
+    const movingStudent=allMembers.some(n=>compact(n)===compact(a.student))?a.student:f.student;
     const start=a.newTime||f.time;
     const end=a.newEndTime||parseTimeRange(a.newTime).end||f.endTime;
     out.push({date:a.newDate,weekday:weekdayLabel(a.newDate),time:fullTime(start,end),
-      student:f.student,course:f.course,teacher:f.teacher,site:f.site,source:'調課',
-      fixedId:f.id,adjustId:a.id||'MOVE-'+a.originalDate+'-'+a.newDate,adjustResult:'已調課',
+      student:movingStudent,course:f.course||roster.course,teacher:f.teacher,site:f.site,source:'調課',
+      fixedId:f.id,groupMulti:allMembers.length>1,adjustId:a.id||'MOVE-'+a.originalDate+'-'+a.newDate,adjustResult:'已調課',
       note:a.note||('由 '+a.originalDate+' 調至 '+a.newDate),template:f.template||''});
   }
 
@@ -808,7 +817,7 @@ function buildRows(fixed, adjusts, fromDate, days){
     if(!inWindow(addDate)) continue;
     const fb=fixed.find(x=>x.id===a.fixedId);
     const start=a.newTime||a.originalTime||'';
-    const end=a.newEndTime||parseTimeRange(a.newTime).end||fb?.endTime||'';
+    const end=a.newEndTime||parseTimeRange(a.newTime).end||a.originalEndTime||fb?.endTime||'';
     if(!timeKey(start)) continue;
     const student=a.student||fb?.student||'';
     if(!student||isUnavailableSlot(student)) continue;
@@ -828,7 +837,7 @@ function buildRows(fixed, adjusts, fromDate, days){
     const range=parseTimeRange(x.time);
     const start=range.start||timeKey(x.time);
     const end=range.end||'';
-    const isMulti=members.length>1;
+    const isMulti=members.length>1||x.groupMulti===true;
     for(const member of members){
       const suffix=isMulti?'#'+member:'';
       const baseId=x.adjustId?(x.fixedId||'ADJ')+'-'+x.date+'-'+x.adjustId:(x.fixedId||'ADJ')+'-'+x.date;
@@ -1517,7 +1526,7 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
     set('新老師',x.teacher||'');
     set('新校區',x.site||'');
     set('確認','是');
-    set('備註',x.note||'來源：開學課表自動解析');
+    set('備註','來源：開學課表自動解析'+(x.note?'；'+x.note:''));
     return row;
   });
   const sourceWriteData=[];
