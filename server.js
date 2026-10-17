@@ -2380,7 +2380,7 @@ function dedupeRawFixedRows(rows){
   let suppressed=0;
   const signature=x=>[
     timeKey(x.time),timeKey(x.endTime),compact(x.student),compact(x.course),compact(x.teacher),
-    compact(x.site),x.untilDate||'',x.colorStatus||''
+    compact(x.site),x.untilDate||'',x.colorStatus||'',str(x.note)
   ].join('|');
   for(const x of rows||[]){
     const key=rawFixedLogicalKey(x);
