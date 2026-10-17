@@ -178,7 +178,7 @@ function studentShortAlias(value){
   return name.length===3&&name.split('').every(ch=>ch>='一'&&ch<='龥')?name.slice(1):'';
 }
 function includesStudent(related, student, allStudentNames=[]){
-  const names=split(related).map(compact);
+  const names=normalizeMemberList(related).map(compact);
   const target=compact(student);
   if(names.includes(target)) return true;
   const alias=studentShortAlias(student);
@@ -558,6 +558,34 @@ function parseInlineAdjustments(fixed, referenceDate=todayKey()){
       });
     }
 
+    // 支援 (9/25~9/27請假)、(9/25~27p) 等固定課表註記。
+    const leaveRangeRe=/\(?\s*(\d{1,2})\/(\d{1,2})\s*[~～\-至]\s*(?:(\d{1,2})\/)?(\d{1,2})\s*(?:p|請假)\s*\)?/gi;
+    while((m=leaveRangeRe.exec(text))){
+      const from=parseDateFlexible(m[1]+'/'+m[2],referenceDate);
+      if(!from) continue;
+      const endMonth=m[3]||m[1];
+      let to=parseDateFlexible(endMonth+'/'+m[4],from);
+      if(!m[3]&&to&&to<from){
+        const [sy,sm]=from.split('-').map(Number);
+        const next=new Date(Date.UTC(sy,sm,Number(m[4])));
+        to=String(next.getUTCFullYear())+'-'+String(next.getUTCMonth()+1).padStart(2,'0')+'-'+String(next.getUTCDate()).padStart(2,'0');
+      }
+      if(!to||!isValidDateKey(to)) continue;
+      let leaveDate=from,count=0;
+      while(leaveDate<=to&&count<31){
+        out.push({
+          id:'INLINE-LEAVE-RANGE-'+f.id+'-'+leaveDate,
+          fixedId:f.id,originalDate:leaveDate,originalTime:f.time,action:'請假',
+          newDate:leaveDate,newTime:f.time,student:f.student,course:f.course,teacher:f.teacher,
+          site:f.site,note:'來源：固定課表備註；'+m[0],source:'固定課表備註'
+        });
+        count++;
+        if(leaveDate===to) break;
+        leaveDate=addDays(leaveDate,1);
+      }
+      if(leaveDate<to) console.warn('[SCHEDULE-LEAVE-RANGE] 固定課表請假區間超過 31 天，已截斷',from,to,f.student);
+    }
+
     // 例：(10/3嘉恆請假)；只在明確包含「請假」時取消該日期的該學生課程。
     const leaveRe=/(\d{1,2})\/(\d{1,2})[^()]*請假/g;
     while((m=leaveRe.exec(text))){
@@ -784,8 +812,8 @@ function buildRows(fixed, adjusts, fromDate, days){
     if(!inWindow(target)||target===a.originalDate) continue;
     for(const f of fixed){
       if(!str(f.student)||isUnavailableSlot(f.student)||norm(f.weekday)!==norm(weekdayLabel(a.originalDate))) continue;
-      if(f.until&&isValidDateKey(f.until)&&a.originalDate>f.until) continue;
-      out.push({date:target,weekday:weekdayLabel(target),time:fullTime(f.time,f.endTime),
+      if(f.until&&isValidDateKey(f.until)&&target>f.until) continue;
+      out.push({date:target,weekday:weekdayLabel(target),time:fullTime(a.newTime||f.time,a.newEndTime||parseTimeRange(a.newTime).end||f.endTime),
         student:f.student,course:f.course,teacher:f.teacher,site:f.site,source:'調課',
         fixedId:f.id,adjustId:a.id||'DATE-MOVE-'+a.originalDate+'-'+target,
         adjustResult:'已調課',note:a.note||('整日調課：'+a.originalDate+' → '+target),template:f.template||''});
@@ -802,9 +830,12 @@ function buildRows(fixed, adjusts, fromDate, days){
        timeKey(x.time)===timeKey(a.originalTime)&&
        normalizeMemberList(splitClassRoster(x.student).students).some(name=>includesStudent(a.student,name,allStudentNames))));
     if(!f||!str(f.student)||isUnavailableSlot(f.student)) continue;
+    if(f.until&&isValidDateKey(f.until)&&a.newDate>f.until) continue;
     const roster=splitClassRoster(f.student);
     const allMembers=normalizeMemberList(roster.course?roster.students:f.student);
-    const movingStudent=allMembers.find(n=>includesStudent(a.student,n,allStudentNames))||f.student;
+    const matchingMember=allMembers.find(n=>includesStudent(a.student,n,allStudentNames));
+    if(roster.course&&!matchingMember) continue;
+    const movingStudent=matchingMember||f.student;
     const start=a.newTime||f.time;
     const end=a.newEndTime||parseTimeRange(a.newTime).end||f.endTime;
     out.push({date:a.newDate,weekday:weekdayLabel(a.newDate),time:fullTime(start,end),
@@ -2206,6 +2237,6 @@ app.get('/preview-source',async(req,res)=>{
 
 
 if(require.main===module) app.listen(PORT,()=>console.log(`LINE Course Schedule Manager v1.2 listening on ${PORT}`));
-module.exports={app,isYes,isNo,parseDateFlexible,splitClassRoster,normalizeMemberList,parseAdjust,parseFixed,parseSettings,buildRows,mergeActualRows,makeReminderRows,mergeReminderItems,actualObjects,missingReminderTimeWarnings,missingActualEndTimeWarnings,adminAuthorized};
+module.exports={app,isYes,isNo,parseDateFlexible,splitClassRoster,normalizeMemberList,parseAdjust,parseInlineAdjustments,parseFixed,parseSettings,buildRows,mergeActualRows,makeReminderRows,mergeReminderItems,actualObjects,missingReminderTimeWarnings,missingActualEndTimeWarnings,adminAuthorized};
 // Safety: do not build or write Google Sheets automatically at startup or on a timer.
 // Use the explicit /build endpoint only after reviewing the source preview.
