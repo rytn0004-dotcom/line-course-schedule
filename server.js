@@ -75,6 +75,12 @@ function qsheet(name){ return `'${String(name).replace(/'/g,"''")}'`; }
 function str(v){ return String(v ?? '').trim(); }
 function normalizeSite(v){ return str(v) || DEFAULT_SITE; }
 function norm(v){ return str(v).replace(/\s+/g,''); }
+function normalizeWeekday(value){
+  const raw=norm(value).replace(/^(?:星期|週|周)/,'');
+  const map={'1':'一','2':'二','3':'三','4':'四','5':'五','6':'六','7':'日',
+    '一':'一','二':'二','三':'三','四':'四','五':'五','六':'六','日':'日'};
+  return map[raw]||raw;
+}
 function split(v){ return str(v).split(/[、,，\/]/).map(s=>s.trim()).filter(Boolean); }
 function normHeader(v){
   return str(v)
@@ -279,7 +285,6 @@ function parseFixed(rows, referenceDate=todayKey()){
   if(hr<0) throw new Error('固定課表欄位不正確。');
   const h=hmap(rows[hr]), out=[];
   const enabledIssues=[];
-  const teacherDiagnostics=[];
   for(let i=hr+1;i<rows.length;i++){
     const r=rows[i]||[]; const id=str(r[h['固定課表ID']]); if(!id) continue;
     const enabledRaw=str(r[h['啟用']]);
@@ -287,33 +292,15 @@ function parseFixed(rows, referenceDate=todayKey()){
     if(!isYes(enabledRaw) && !isNo(enabledRaw)){
       enabledIssues.push({row:i+1,id,student:str(r[h['學生']]),teacher:str(r[h['老師']]),enabledRaw});
     }
-    const teacherRaw=str(r[h['老師']]);
-    if(teacherRaw && /陳少禹|少禹/.test(teacherRaw)){
-      teacherDiagnostics.push({row:i+1,id,student:str(r[h['學生']]),teacher:teacherRaw,enabled:enabledRaw,weekday:str(r[h['星期']]),rawTime:str(r[h['上課時間']]),course:str(r[h['課程']]),site:str(r[h['校區']]),until:str(r[h['有效迄日']])});
-    }
     if(!enabled) continue;
-    const weekday=norm(r[h['星期']]); const rawTime=str(r[h['上課時間']]); const range=parseTimeRange(rawTime); const time=range.start||timeKey(rawTime);
+    const weekday=normalizeWeekday(r[h['星期']]); const rawTime=str(r[h['上課時間']]); const range=parseTimeRange(rawTime); const time=range.start||timeKey(rawTime);
     if(!weekday||!time) continue;
     const student=str(r[h['學生']])||extractStudentFromTime(rawTime);
     if(!student || isUnavailableSlot(student)) continue;
     out.push({id,weekday,time,endTime:range.end,student,course:str(r[h['課程']]),teacher:str(r[h['老師']]),site:normalizeSite(r[h['校區']]),until:parseDateFlexible(r[h['有效迄日']],referenceDate),template:str(r[h['通知模板']]),note:str(r[h['備註']]),rawTime});
   }
-  // 診斷指定學生為何沒有進入「實際課程」。只記錄少禹相關資料，不改變既有排課結果。
-  const diagnosticStudents=['陳少禹','少禹'];
-  for(const target of diagnosticStudents){
-    const matched=out.filter(f=>compact(f.student)===compact(target));
-    if(matched.length){
-      console.log('[SCHEDULE-DIAG] 固定課表找到學生', target, matched.map(f=>({
-        id:f.id, weekday:f.weekday, rawTime:f.rawTime, time:f.time, endTime:f.endTime,
-        course:f.course, teacher:f.teacher, site:f.site, until:f.until, enabled:'是', note:f.note
-      })));
-    }
-  }
   if(enabledIssues.length){
-    console.warn('[SCHEDULE-DATA-CHECK] 固定課表「啟用」欄位不是「是／否」', enabledIssues);
-  }
-  if(teacherDiagnostics.length){
-    console.log('[SCHEDULE-DATA-CHECK] 固定課表找到老師「陳少禹」', teacherDiagnostics);
+    console.warn('[SCHEDULE-DATA-CHECK] 固定課表「啟用」欄位不是「是／否」', enabledIssues.map(x=>({row:x.row,id:x.id,enabledRaw:x.enabledRaw})));
   }
   return out;
 }
@@ -1979,12 +1966,14 @@ async function build({fromDate=todayKey(),days=DEFAULT_DAYS}={}){
   // 建立完成後再次確認少禹是否真的進入實際課程。
   const diagFixed=fixed.filter(f=>['陳少禹','少禹'].some(n=>compact(f.student)===compact(n)));
   const diagActual=actualObjects(actual).filter(x=>['陳少禹','少禹'].some(n=>compact(x.student)===compact(n)));
-  console.log('[SCHEDULE-DIAG] 少禹 Build 結果', {
-    fromDate,
-    toDate:addDays(fromDate,days-1),
-    fixedMatches:diagFixed.map(f=>({id:f.id,weekday:f.weekday,time:f.time,endTime:f.endTime,until:f.until,course:f.course,teacher:f.teacher,site:f.site,note:f.note})),
-    actualMatches:diagActual.map(x=>({courseId:x.courseId,date:x.date,weekday:x.weekday,time:x.time,student:x.student,course:x.course,teacher:x.teacher,site:x.site,source:x.source,fixedId:x.fixedId,adjustId:x.adjustId,adjustResult:x.adjustResult,note:x.note}))
-  });
+  if(isYes(process.env.SCHEDULE_DEBUG_DIAGNOSTICS||'否')){
+    console.log('[SCHEDULE-DIAG] 指定診斷啟用', {
+      fromDate,
+      toDate:addDays(fromDate,days-1),
+      fixedMatches:diagFixed.map(f=>({id:f.id,weekday:f.weekday,time:f.time,endTime:f.endTime,until:f.until,course:f.course,teacher:f.teacher,site:f.site,note:f.note})),
+      actualMatches:diagActual.map(x=>({courseId:x.courseId,date:x.date,weekday:x.weekday,time:x.time,student:x.student,course:x.course,teacher:x.teacher,site:x.site,source:x.source,fixedId:x.fixedId,adjustId:x.adjustId,adjustResult:x.adjustResult,note:x.note}))
+    });
+  }
   const toDate=addDays(fromDate,days-1);
   const warnings=[
     ...(sourceSync.warnings||[]),
@@ -2283,7 +2272,7 @@ function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
 function rawFixedLogicalKey(x){
   const rawTime=str(x.time);
   const start=parseTimeRange(rawTime).start || timeKey(rawTime);
-  return [norm(x.weekday),start,compact(stripScheduleAnnotation(x.student)),compact(stripScheduleAnnotation(x.teacher))].join('|');
+  return [normalizeWeekday(x.weekday),start,compact(stripScheduleAnnotation(x.student)),compact(stripScheduleAnnotation(x.teacher))].join('|');
 }
 
 function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {}, referenceDate=''){
