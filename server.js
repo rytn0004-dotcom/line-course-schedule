@@ -1728,6 +1728,8 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
     teacherNotesCount:parsed.teacherNotes.length,
     unavailableSlotsCount:parsed.unavailableSlots.length,
     unavailableSlots:parsed.unavailableSlots,
+    openSlotsCount:parsed.openSlots.length,
+    openSlots:parsed.openSlots.slice(0,200),
     unclassifiedSamples:parsed.unclassifiedItems.slice(0,5).map(x=>({teacher:x.teacher,weekday:x.weekday,time:x.time,student:x.student,note:x.note})),
     teacherNotes:parsed.teacherNotes.slice(0,10),
     warnings:[
@@ -2379,7 +2381,7 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
     const seenHeader=header.map(rawCellText).filter(Boolean).join('、');
     throw new Error('「開學課表」格式不符合目前預期：需要老師欄及星期欄位；目前讀到：'+(seenHeader||'空白標題列'));
   }
-  const fixed=[], adjustments=[], redItems=[], unclassifiedItems=[], durationRows=[], teacherNotes=[], unavailableSlots=[];
+  const fixed=[], adjustments=[], redItems=[], unclassifiedItems=[], durationRows=[], teacherNotes=[], unavailableSlots=[], openSlots=[];
 
   for(let r=1;r<rows.length;r++){
     const row=rows[r]||[];
@@ -2398,8 +2400,10 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
         const start=timeKey(timeMatch[1]), end=timeKey(timeMatch[2]), remainder=str(timeMatch[3]);
         if(start&&end&&isUnavailableSlot(remainder)){
           unavailableSlots.push({teacher,weekday,start,end,note:remainder,raw:line,sourceRow:r+1});
-        }else if(!start||!end||(!remainder&&!isUnavailableSlot(remainder))){
-          unclassifiedItems.push({teacher,weekday,time:(start||timeMatch[1])+(end?'-'+end:''),student:remainder,raw:line,colorStatus:'unknown',note:'[無法判讀的來源時段] 時間格式無效或缺少學生／狀態文字'});
+        }else if(!start||!end){
+          unclassifiedItems.push({teacher,weekday,time:(start||timeMatch[1])+(end?'-'+end:''),student:remainder,raw:line,colorStatus:'unknown',note:'[無法判讀的來源時段] 時間格式無效'});
+        }else if(!remainder){
+          openSlots.push({teacher,weekday,start,end,raw:line,sourceRow:r+1});
         }
       }
       for(const item of parseRawCourseCell(row[Number(col)],teacher,weekday,dateReference,themeColors)){
@@ -2459,7 +2463,7 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
     }
   }
 
-  return {fixed,adjustments,redItems,unclassifiedItems,teacherNotes,unavailableSlots};
+  return {fixed,adjustments,redItems,unclassifiedItems,teacherNotes,unavailableSlots,openSlots};
 }
 
 
@@ -2715,7 +2719,9 @@ async function buildSourcePreview(year = new Date().getFullYear()){
     unclassifiedItems:parsed.unclassifiedItems.slice(0,200),
     teacherNotes:parsed.teacherNotes.slice(0,100),
     unavailableSlotsCount:parsed.unavailableSlots.length,
-    unavailableSlots:parsed.unavailableSlots.slice(0,200)
+    unavailableSlots:parsed.unavailableSlots.slice(0,200),
+    openSlotsCount:parsed.openSlots.length,
+    openSlots:parsed.openSlots.slice(0,200)
   };
 }
 
