@@ -354,6 +354,24 @@ test('purple single-course adjustment keeps its end time and does not raise a fa
 
 
 
+test('inline source add-course annotation preserves course name, action, and complete time', () => {
+  const parsed = parseRawSchedule([
+    ['老師', '星期六'],
+    ['黃政銓', { value: '1230-1400尚哲(10/3理化加課)' }]
+  ], 2026, {}, '2026-10-17');
+  const add = parsed.adjustments.find(x => x.student === '尚哲' && x.newDate === '2026-10-03');
+  assert.ok(add);
+  assert.equal(add.action, '加課');
+  assert.equal(add.course, '理化');
+  assert.equal(add.newTime, '12:30');
+  assert.equal(add.newEndTime, '14:00');
+  const rows = buildRows([], [add], '2026-10-03', 1);
+  const actual = rows.find(x => x[4] === '尚哲');
+  assert.ok(actual);
+  assert.equal(actual[5], '理化');
+  assert.equal(actual[3], '12:30-14:00');
+});
+
 test('source schedule time adjustments preserve the adjusted end time, including mixed notes', () => {
   const parsed = parseRawSchedule([
     ['老師', '星期二', '星期五'],
