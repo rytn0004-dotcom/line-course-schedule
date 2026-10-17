@@ -11,7 +11,7 @@ process.env.SCHEDULE_ADMIN_TOKEN = 'test-token';
 
 const {
   isYes, isObsoleteImportedRow, parseDateFlexible, splitClassRoster, buildRows, mergeActualRows,
-  parseAdjust, parseInlineAdjustments, actualObjects, makeReminderRows, missingActualEndTimeWarnings
+  parseRawSchedule, parseAdjust, parseInlineAdjustments, actualObjects, makeReminderRows, missingActualEndTimeWarnings
 } = require('../server');
 
 const weekday = '一';
@@ -240,6 +240,34 @@ test('admin authorization rejects missing or wrong tokens', () => {
   assert.equal(adminAuthorized(request('test-token')), true);
   assert.equal(adminAuthorized(request('wrong-token')), false);
   assert.equal(adminAuthorized(request('')), false);
+});
+
+
+test('purple single-course adjustment keeps its end time and does not raise a false warning', () => {
+  const cell = {
+    value: '1100-1230苡安(10/16p調10/17b)',
+    textFormatRuns: [{
+      startIndex: 9,
+      format: { foregroundColor: { red: 0.6, green: 0, blue: 1 } }
+    }]
+  };
+  const parsed = parseRawSchedule([
+    ['老師', '星期六'],
+    ['王老師', cell]
+  ], 2026);
+
+  assert.equal(parsed.adjustments.length, 1);
+  const adjustment = parsed.adjustments[0];
+  assert.equal(adjustment.newDate, '2026-10-17');
+  assert.equal(adjustment.newTime, '11:00');
+  assert.equal(adjustment.newEndTime, '12:30');
+
+  const rows = buildRows([], [adjustment], '2026-10-17', 30);
+  const oneTime = rows.find(row => row[4] === '苡安');
+  assert.ok(oneTime);
+  assert.equal(oneTime[1], '2026-10-17');
+  assert.equal(oneTime[3], '11:00-12:30');
+  assert.equal(missingActualEndTimeWarnings(rows).length, 0);
 });
 
 
