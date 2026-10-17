@@ -38,6 +38,9 @@ function isYes(v, whenBlank=false){
   return ['是','yes','true','1','啟用','y'].includes(x);
 }
 function isNo(v){ return ['否','no','false','0','停用','n'].includes(normValue(v)); }
+function isObsoleteImportedRow(id, note, activeIds, sourceMarker){
+  return !!str(id) && !activeIds.has(str(id)) && str(note).includes(str(sourceMarker));
+}
 function adminAuthorized(req){
   const expected=String(process.env.SCHEDULE_ADMIN_TOKEN||'');
   if(!expected) return false;
@@ -1517,9 +1520,8 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
     const activeSourceIds=new Set(matchedFixed.map(x=>x.id));
     const alreadyChanged=new Set(fixedUpdates.map(x=>x.rowNumber));
     for(const [id,old] of existingFixedById){
-      if(activeSourceIds.has(id)||alreadyChanged.has(old.rowNumber)) continue;
       const oldNote=fh['備註']===undefined?'':str(old.values[fh['備註']]);
-      if(!oldNote.includes('來源：開學課表自動同步')) continue;
+      if(alreadyChanged.has(old.rowNumber)||!isObsoleteImportedRow(id,oldNote,activeSourceIds,'來源：開學課表自動同步')) continue;
       const row=old.values.slice();
       while(row.length<fixedHeaders.length) row.push('');
       if(fh['啟用']!==undefined) row[fh['啟用']]='否';
@@ -1552,9 +1554,8 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
     for(let i=adjustHeaderRow+1;i<adjustRows.length;i++){
       const oldRow=adjustRows[i]||[];
       const id=str(oldRow[ah['調課ID']]);
-      if(!id||activeSourceAdjustIds.has(id)) continue;
       const note=ah['備註']===undefined?'':str(oldRow[ah['備註']]);
-      if(!note.includes('來源：開學課表')) continue;
+      if(!isObsoleteImportedRow(id,note,activeSourceAdjustIds,'來源：開學課表')) continue;
       const row=oldRow.slice();
       while(row.length<adjustHeaders.length) row.push('');
       if(ah['確認']!==undefined) row[ah['確認']]='否';
@@ -2237,6 +2238,6 @@ app.get('/preview-source',async(req,res)=>{
 
 
 if(require.main===module) app.listen(PORT,()=>console.log(`LINE Course Schedule Manager v1.2 listening on ${PORT}`));
-module.exports={app,isYes,isNo,parseDateFlexible,splitClassRoster,normalizeMemberList,parseAdjust,parseInlineAdjustments,parseFixed,parseSettings,buildRows,mergeActualRows,makeReminderRows,mergeReminderItems,actualObjects,missingReminderTimeWarnings,missingActualEndTimeWarnings,adminAuthorized};
+module.exports={app,isYes,isNo,isObsoleteImportedRow,parseDateFlexible,splitClassRoster,normalizeMemberList,parseAdjust,parseInlineAdjustments,parseFixed,parseSettings,buildRows,mergeActualRows,makeReminderRows,mergeReminderItems,actualObjects,missingReminderTimeWarnings,missingActualEndTimeWarnings,adminAuthorized};
 // Safety: do not build or write Google Sheets automatically at startup or on a timer.
 // Use the explicit /build endpoint only after reviewing the source preview.
