@@ -11,7 +11,7 @@ process.env.SCHEDULE_ADMIN_TOKEN = 'test-token';
 
 const {
   isYes, isObsoleteImportedRow, parseDateFlexible, splitClassRoster, buildRows, mergeActualRows,
-  parseRawSchedule, dedupeSourceAdjustments, assignPreviewAdjustmentIds, parseAdjust, parseInlineAdjustments, parseFixed, actualObjects, makeReminderRows, adjustmentConflictWarnings, actualIntegrityWarnings, missingActualEndTimeWarnings
+  parseRawSchedule, dedupeSourceAdjustments, assignPreviewAdjustmentIds, parseAdjust, parseInlineAdjustments, parseFixed, parseSettings, actualObjects, makeReminderRows, adjustmentConflictWarnings, actualIntegrityWarnings, missingActualEndTimeWarnings
 } = require('../server');
 
 const weekday = '一';
@@ -28,6 +28,20 @@ const fixed = (overrides = {}) => ({
   template: '',
   note: '',
   ...overrides
+});
+
+
+test('system settings fail closed when the reminder master switch is missing or invalid', () => {
+  assert.throws(
+    () => parseSettings([['設定項目', '目前值'], ['家長通知', '是']]),
+    /課程提醒啟用/
+  );
+  assert.throws(
+    () => parseSettings([['設定項目', '目前值'], ['課程提醒啟用', 'enabled']]),
+    /請明確填寫/
+  );
+  assert.equal(parseSettings([['設定項目', '目前值'], ['課程提醒啟用', '否']]).enabled, '否');
+  assert.equal(parseSettings([['設定項目', '目前值'], ['課程提醒啟用', '是']]).enabled, '是');
 });
 
 test('yes/no setting values normalize consistently', () => {
