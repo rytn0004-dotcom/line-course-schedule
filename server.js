@@ -9,6 +9,7 @@ const {
   normalizeStudentNameForContact,
   parseSingleDateOnlyNote,
   parseTeacherConfirmUntil,
+  sourceTeacherCourseOverride,
   splitWrappedCourseLines
 } = require('./source_note_rules');
 
@@ -1797,19 +1798,6 @@ function parseRawPurpleCourse(item, year = new Date().getFullYear()){
     note:'[單次／紫色調課] '+originNote+'課程：'+(item.raw||item.student)+'；備註：'+(annotationText||'無')+'；字色 '+(item.colorHex||'未知')+extensionNote,
     source:'開學課表',colorStatus:item.colorStatus,colorHex:item.colorHex||''
   }];
-}
-
-function sourceTeacherCourseOverride(value){
-  const source=str(value);
-  const aliases=[
-    {patterns:[/詔鈞代/,/代詔鈞/,/詔鈞(?=(?:國文|數學|理化|物理|化學|英文|生物|自然|社會))/],teacher:'楊詔鈞'},
-    {patterns:[/佳盈代/,/代佳盈/,/佳盈(?=(?:國文|數學|理化|物理|化學|英文|生物|自然|社會))/],teacher:'吳佳盈'},
-    {patterns:[/維軒代/,/代維軒/,/維軒(?=(?:國文|數學|理化|物理|化學|英文|生物|自然|社會))/],teacher:'林維軒'},
-    {patterns:[/政銓代/,/代政銓/,/政銓(?=(?:國文|數學|理化|物理|化學|英文|生物|自然|社會))/],teacher:'黃政銓'}
-  ];
-  const found=aliases.find(x=>x.patterns.some(re=>re.test(source)));
-  const courseMatch=source.match(/(?:詔鈞|佳盈|維軒|政銓)\s*(國文|數學|理化|物理|化學|英文|生物|自然|社會)/);
-  return {teacher:found?.teacher||'',course:courseMatch?str(courseMatch[1]):''};
 }
 
 function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
