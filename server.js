@@ -1456,6 +1456,16 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
   const year=Number(String(referenceDate).slice(0,4))||Number(todayKey().slice(0,4));
   const {rawRows,fixedRows,adjustRows,themeColors}=await readRawSourcePreview();
   const parsed=parseRawSchedule(rawRows,year,themeColors,referenceDate);
+  const sourceFixedParsedCount=parsed.fixed.length;
+  const fixedDedup=dedupeRawFixedRows(parsed.fixed);
+  if(fixedDedup.conflicts.length){
+    const examples=fixedDedup.conflicts.slice(0,3).map(c=>
+      [c.first.weekday,c.first.time+'-'+c.first.endTime,c.first.student,c.first.teacher].filter(Boolean).join(' ')+
+      '（來源同一識別鍵但時段／課程資訊不一致）'
+    ).join('；');
+    throw new Error('來源課表有 '+fixedDedup.conflicts.length+' 組固定課程使用相同識別鍵，但結束時間、科目、校區或有效日不一致；為避免同一固定課表 ID 被覆寫，已停止來源同步。例：'+examples);
+  }
+  parsed.fixed=fixedDedup.rows;
   const fixedHeaderRow=findHeaderRow(fixedRows,['固定課表ID','星期','上課時間','學生','課程','老師','校區','有效迄日','啟用','備註','通知模板']);
   if(fixedHeaderRow<0) throw new Error('來源同步停止：固定課表缺少必要欄位（包含備註、通知模板等）；尚未寫入資料。');
   const adjustHeaderRow=findHeaderRow(adjustRows,['調課ID','原固定課表ID','原日期','原時間','動作','新日期','新時間','學生','新課程','新老師','新校區','確認','備註']);
@@ -1718,7 +1728,8 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
   }
   return {
     sourceSheet:'開學課表',
-    sourceFixedParsed:parsed.fixed.length,
+    sourceFixedParsed:sourceFixedParsedCount,
+    duplicateFixedRowsSuppressed:fixedDedup.suppressed,
     sourceAdjustmentsParsed:parsed.adjustments.length,
     duplicateSourceAdjustmentsSuppressed:dedupedSourceAdjustments.suppressed,
     fixedAdded:fixedOutput.length,
@@ -1731,6 +1742,7 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
     unclassifiedSamples:parsed.unclassifiedItems.slice(0,5).map(x=>({teacher:x.teacher,weekday:x.weekday,time:x.time,student:x.student,note:x.note})),
     teacherNotes:parsed.teacherNotes.slice(0,10),
     warnings:[
+      ...(fixedDedup.suppressed ? ['來源課表含 '+fixedDedup.suppressed+' 筆完全相同的固定課程列，已合併，避免重複匯入；它們的備註／調課仍分別解析。'] : []),
       ...(dedupedSourceAdjustments.suppressed ? ['來源解析產生 '+dedupedSourceAdjustments.suppressed+' 筆完全相同的調課，已合併，避免重複匯入。'] : []),
       ...(parsed.unclassifiedItems.length ? ['來源課表有 '+parsed.unclassifiedItems.length+' 筆課程無法自動判讀，未自動匯入；例：'+parsed.unclassifiedItems.slice(0,3).map(x=>[x.teacher,x.weekday,x.time,x.student].filter(Boolean).join(' ')).join('、')] : []),
       ...(parsed.teacherNotes.length ? ['來源課表有 '+parsed.teacherNotes.length+' 筆老師欄附加備註；程式目前只保留供人工檢查，未自動把備註轉成停課／有效期限規則。例：'+parsed.teacherNotes.slice(0,3).map(x=>x.teacher+'：'+x.note).join('；')] : [])
@@ -2362,6 +2374,32 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
   return {fixed,adjustments,redItems,unclassifiedItems,teacherNotes};
 }
 
+
+function dedupeRawFixedRows(rows){
+  const byKey=new Map(),unique=[],conflicts=[];
+  let suppressed=0;
+  const signature=x=>[
+    timeKey(x.time),timeKey(x.endTime),compact(x.student),compact(x.course),compact(x.teacher),
+    compact(x.site),x.untilDate||'',x.colorStatus||''
+  ].join('|');
+  for(const x of rows||[]){
+    const key=rawFixedLogicalKey(x);
+    const sig=signature(x);
+    const prior=byKey.get(key);
+    if(!prior){
+      byKey.set(key,{signature:sig,row:x});
+      unique.push(x);
+      continue;
+    }
+    if(prior.signature!==sig){
+      if(!conflicts.some(c=>c.key===key)){
+        conflicts.push({key,first:prior.row,conflicting:x});
+      }
+    }else suppressed++;
+  }
+  return {rows:unique,suppressed,conflicts};
+}
+
 function matchRawFixedIds(rawFixed, existingFixedRows){
   const existing=[];
   const hr=findHeaderRow(existingFixedRows,['固定課表ID','星期','上課時間','學生','老師','校區','有效迄日','啟用']);
@@ -2605,6 +2643,6 @@ app.get('/preview-source',async(req,res)=>{
 
 
 if(require.main===module) app.listen(PORT,()=>console.log(`LINE Course Schedule Manager v1.2 listening on ${PORT}`));
-module.exports={app,isYes,isNo,isObsoleteImportedRow,parseDateFlexible,splitClassRoster,normalizeMemberList,parseRawSchedule,dedupeSourceAdjustments,assignPreviewAdjustmentIds,parseAdjust,parseInlineAdjustments,parseFixed,parseSettings,buildRows,mergeActualRows,makeReminderRows,mergeReminderItems,actualObjects,adjustmentConflictWarnings,actualIntegrityWarnings,missingRecipientWarnings,notificationTemplateWarnings,shouldPreserveReminderConfirmation,missingReminderTimeWarnings,missingActualEndTimeWarnings,adminAuthorized};
+module.exports={app,isYes,isNo,isObsoleteImportedRow,parseDateFlexible,splitClassRoster,normalizeMemberList,parseRawSchedule,dedupeRawFixedRows,dedupeSourceAdjustments,assignPreviewAdjustmentIds,parseAdjust,parseInlineAdjustments,parseFixed,parseSettings,buildRows,mergeActualRows,makeReminderRows,mergeReminderItems,actualObjects,adjustmentConflictWarnings,actualIntegrityWarnings,missingRecipientWarnings,notificationTemplateWarnings,shouldPreserveReminderConfirmation,missingReminderTimeWarnings,missingActualEndTimeWarnings,adminAuthorized};
 // Safety: do not build or write Google Sheets automatically at startup or on a timer.
 // Use the explicit /build endpoint only after reviewing the source preview.
