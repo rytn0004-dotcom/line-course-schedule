@@ -112,10 +112,21 @@ function dateKey(v){
   return m ? `${m[1]}-${String(+m[2]).padStart(2,'0')}-${String(+m[3]).padStart(2,'0')}` : s.slice(0,10);
 }
 function timeKey(v){
-  if(typeof v==='number'){ const mins=Math.round((v%1)*24*60); return String(Math.floor(mins/60)%24).padStart(2,'0')+':'+String(mins%60).padStart(2,'0'); }
-  const x=str(v).replace(/\s+/g,''); const m=x.match(/^(\d{1,2}):([0-5]\d)/);
-  if(m) return String(+m[1]).padStart(2,'0')+':'+m[2];
-  if(/^\d{3,4}$/.test(x)){ const n=x.padStart(4,'0'),hh=+n.slice(0,2),mm=+n.slice(2); if(hh<24&&mm<60)return String(hh).padStart(2,'0')+':'+String(mm).padStart(2,'0'); }
+  if(typeof v==='number'){
+    if(!Number.isFinite(v)) return '';
+    const mins=Math.round((v%1)*24*60);
+    return String(Math.floor(mins/60)%24).padStart(2,'0')+':'+String(mins%60).padStart(2,'0');
+  }
+  const x=str(v).replace(/\s+/g,'');
+  const m=x.match(/^(\d{1,2}):([0-5]\d)(?::00)?$/);
+  if(m){
+    const hh=Number(m[1]);
+    return hh<24 ? String(hh).padStart(2,'0')+':'+m[2] : '';
+  }
+  if(/^\d{3,4}$/.test(x)){
+    const n=x.padStart(4,'0'),hh=Number(n.slice(0,2)),mm=Number(n.slice(2));
+    if(hh<24&&mm<60)return String(hh).padStart(2,'0')+':'+String(mm).padStart(2,'0');
+  }
   return '';
 }
 function parseTimeRange(v){ const m=str(v).replace(/\s+/g,'').match(/(\d{1,2}:?\d{2})[-~～至](\d{1,2}:?\d{2})/); return m?{start:timeKey(m[1]),end:timeKey(m[2])}:{start:'',end:''}; }
@@ -139,18 +150,14 @@ function parseDateFlexible(v, reference=todayKey()){
   if(!short) return '';
   const refKey=isValidDateKey(String(reference)) ? String(reference) :
     /^\d{4}$/.test(String(reference)) ? String(reference)+'-01-01' : todayKey();
-  const year=Number(refKey.slice(0,4));
+  const referenceYear=Number(refKey.slice(0,4));
   const makeKey=y=>String(y)+'-'+String(+short[1]).padStart(2,'0')+'-'+String(+short[2]).padStart(2,'0');
-  let key=makeKey(year);
-  if(!isValidDateKey(key)) return '';
-  if(key<addDays(refKey,-30)){
-    const next=makeKey(year+1);
-    if(isValidDateKey(next)){
-      const distance=(a,b)=>Math.abs(Date.parse(a+'T00:00:00Z')-Date.parse(b+'T00:00:00Z'));
-      if(distance(next,refKey)<distance(key,refKey)) key=next;
-    }
-  }
-  return key;
+  const candidates=[referenceYear-1,referenceYear,referenceYear+1].map(makeKey).filter(isValidDateKey);
+  if(!candidates.length) return '';
+  const distance=(a,b)=>Math.abs(Date.parse(a+'T00:00:00Z')-Date.parse(b+'T00:00:00Z'));
+  candidates.sort((a,b)=>distance(a,refKey)-distance(b,refKey)||
+    Math.abs(Number(a.slice(0,4))-referenceYear)-Math.abs(Number(b.slice(0,4))-referenceYear));
+  return candidates[0];
 }
 function extractMoveDate(action, originalDate, referenceDate=originalDate||todayKey()){
   const s=str(action).replace(/[\s　]+/g,'');
@@ -348,7 +355,9 @@ function parseAdjust(rows, correctionRows=[], referenceDate=todayKey()){
         item.action||'',
         item.newDate||'',
         item.newTime||'',
-        item.course||''
+        item.newEndTime||'',
+        item.course||'',
+        item.teacher||''
       ].join('|');
       if(parsedCorrectionKeys.has(key)) return;
       parsedCorrectionKeys.add(key);
@@ -438,7 +447,7 @@ function parseAdjust(rows, correctionRows=[], referenceDate=todayKey()){
               pushCorrection({
                 id:'CORR-NOTE-TIME-'+(i+1)+'-'+moveDate+'-'+compact(moveStudent)+'-'+originalStart+'-'+moveStart,
                 fixedId:'',originalDate:moveDate,originalTime:originalStart,action:'改時間',
-                newDate:moveDate,newTime:moveStart,student:moveStudent,
+                newDate:moveDate,newTime:moveStart,newEndTime:moveEnd,student:moveStudent,
                 course:'',teacher:'',site:'',
                 note:'來源：課程校正備註；'+line+'（原時段 '+originalStart+'-'+originalEnd+'；新時段 '+moveStart+'-'+moveEnd+'）',source:'課程校正'
               });
@@ -542,7 +551,7 @@ function parseInlineAdjustments(fixed, referenceDate=todayKey()){
       out.push({
         id:'INLINE-'+f.id+'-'+from+'-'+to,
         fixedId:f.id,originalDate:from,originalTime:f.time,action:'調課',
-        newDate:to,newTime:f.time,student:f.student,course:f.course,teacher:f.teacher,
+        newDate:to,newTime:f.time,newEndTime:f.endTime||'',student:f.student,course:f.course,teacher:f.teacher,
         site:f.site,note:'來源：固定課表備註；'+m[0],source:'固定課表備註'
       });
     }
@@ -556,7 +565,7 @@ function parseInlineAdjustments(fixed, referenceDate=todayKey()){
       out.push({
         id:'INLINE-TIME-'+f.id+'-'+from+'-'+nt,
         fixedId:f.id,originalDate:from,originalTime:f.time,action:'改時間',
-        newDate:from,newTime:nt,student:f.student,course:f.course,teacher:f.teacher,
+        newDate:from,newTime:nt,newEndTime:timeKey(m[4])||'',student:f.student,course:f.course,teacher:f.teacher,
         site:f.site,note:'來源：固定課表備註；'+m[0],source:'固定課表備註'
       });
     }
@@ -1387,7 +1396,7 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
   }
   const year=Number(String(referenceDate).slice(0,4))||Number(todayKey().slice(0,4));
   const {rawRows,fixedRows,adjustRows,themeColors}=await readRawSourcePreview();
-  const parsed=parseRawSchedule(rawRows,year,themeColors);
+  const parsed=parseRawSchedule(rawRows,year,themeColors,referenceDate);
   const fixedHeaderRow=findHeaderRow(fixedRows,['固定課表ID','星期','上課時間','學生','課程','老師','校區','有效迄日','啟用']);
   if(fixedHeaderRow<0) throw new Error('來源同步停止：固定課表欄位不正確，沒有寫入任何資料。');
   const adjustHeaderRow=findHeaderRow(adjustRows,['調課ID','原固定課表ID','原日期','原時間','動作','新日期','新時間','學生','確認']);
@@ -1971,18 +1980,17 @@ function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
     const text=rawText.replace(/\s+/g,'');
     let m;
     // 日期與新時段之間必須有分隔空白，避免把時間的首位數字併入日期。
-    const sameDayTime=/^(\d{1,2})\/(\d{1,2})\s+(\d{1,2}:?\d{2})[-~～至](\d{1,2}:?\d{2})$/;
-    const sameDayMatch=rawText.match(sameDayTime);
-    if(sameDayMatch){
-      const d=parseDateFlexible(sameDayMatch[1]+'/'+sameDayMatch[2],year);
-      const newStart=timeKey(sameDayMatch[3]), newEnd=timeKey(sameDayMatch[4]);
-      if(d && newStart && newEnd) out.push({id:'',fixedId:'',weekday:item.weekday,colorStatus:item.colorStatus,colorHex:item.colorHex,originalDate:d,originalTime:item.time,action:'改時間',newDate:d,newTime:newStart,student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note+'（調整後時段 '+newStart+'-'+newEnd+'）',source:'開學課表'});
+    const sameDayTime=/(\d{1,2})\/(\d{1,2})\s+(\d{1,2}:?\d{2})\s*[-~～至]\s*(\d{1,2}:?\d{2})/g;
+    while((m=sameDayTime.exec(rawText))){
+      const d=parseDateFlexible(m[1]+'/'+m[2],year);
+      const newStart=timeKey(m[3]), newEnd=timeKey(m[4]);
+      if(d && newStart && newEnd) out.push({id:'',fixedId:'',weekday:item.weekday,colorStatus:item.colorStatus,colorHex:item.colorHex,originalDate:d,originalTime:item.time,originalEndTime:item.endTime||'',action:'改時間',newDate:d,newTime:newStart,newEndTime:newEnd,student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note+'（調整後時段 '+newStart+'-'+newEnd+'）',source:'開學課表'});
     }
     const moveRe=/(\d{1,2})\/(\d{1,2})[^()]*?調\s*(\d{1,2})\/(\d{1,2})/g;
     while((m=moveRe.exec(text))){
       const from=parseDateFlexible(m[1]+'/'+m[2],year);
       const to=parseDateFlexible(m[3]+'/'+m[4],year);
-      if(from && to) out.push({id:'',fixedId:'',weekday:item.weekday,colorStatus:item.colorStatus,colorHex:item.colorHex,originalDate:from,originalTime:item.time,action:'調課',newDate:to,newTime:item.time,student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note,source:'開學課表'});
+      if(from && to) out.push({id:'',fixedId:'',weekday:item.weekday,colorStatus:item.colorStatus,colorHex:item.colorHex,originalDate:from,originalTime:item.time,originalEndTime:item.endTime||'',action:'調課',newDate:to,newTime:item.time,newEndTime:item.endTime||'',student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note,source:'開學課表'});
     }
     // Multiple absence dates may be written as "9/8p、10/6p".
     // The negative look-ahead excludes a make-up expression such as "9/8p調10/5b".
@@ -2003,7 +2011,7 @@ function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
     const addRe=/(\d{1,2})\/(\d{1,2})[^0-9]*?(?:補課|加課)/g;
     while((m=addRe.exec(text))){
       const d=parseDateFlexible(m[1]+'/'+m[2],year);
-      if(d) out.push({id:'',fixedId:'',weekday:item.weekday,colorStatus:item.colorStatus,colorHex:item.colorHex,originalDate:'',originalTime:'',action:'補課',newDate:d,newTime:item.time,student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note,source:'開學課表'});
+      if(d) out.push({id:'',fixedId:'',weekday:item.weekday,colorStatus:item.colorStatus,colorHex:item.colorHex,originalDate:'',originalTime:'',action:'補課',newDate:d,newTime:item.time,newEndTime:item.endTime||'',student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note,source:'開學課表'});
     }
   }
   return out;
@@ -2015,7 +2023,9 @@ function rawFixedLogicalKey(x){
   return [norm(x.weekday),start,compact(stripScheduleAnnotation(x.student)),compact(stripScheduleAnnotation(x.teacher))].join('|');
 }
 
-function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {}){
+function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {}, referenceDate=''){
+  const dateReference=isValidDateKey(String(referenceDate)) ? String(referenceDate) :
+    String(Number(year)||new Date().getFullYear())+'-01-01';
   if(!rows.length) throw new Error('找不到「開學課表」資料。');
   const header=rows[0]||[];
   const teacherAliases=new Set(['老師','授課老師','班別負責老師','負責老師']);
@@ -2030,23 +2040,26 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
     const seenHeader=header.map(rawCellText).filter(Boolean).join('、');
     throw new Error('「開學課表」格式不符合目前預期：需要老師欄及星期欄位；目前讀到：'+(seenHeader||'空白標題列'));
   }
-  const fixed=[], adjustments=[], redItems=[], unclassifiedItems=[], durationRows=[];
+  const fixed=[], adjustments=[], redItems=[], unclassifiedItems=[], durationRows=[], teacherNotes=[];
   for(let r=1;r<rows.length;r++){
     const row=rows[r]||[];
     const teacherCell=rawCellText(row[teacherCol]);
-    const teacher=stripScheduleAnnotation((teacherCell.split(/\r?\n/)[0]||'').replace(/[（(][^）)]*[）)]/g,(whole,x,offset,before)=>/(?:團班|班別)/.test(before||'') && !/[0-9]/.test(x) ? whole : ''));
+    const teacherLines=teacherCell.split(/\r?\n/).map(str).filter(Boolean);
+    const teacher=stripScheduleAnnotation((teacherLines[0]||'').replace(/[（(][^）)]*[）)]/g,(whole,x,offset,before)=>/(?:團班|班別)/.test(before||'') && !/[0-9]/.test(x) ? whole : ''));
+    const teacherNote=teacherLines.slice(1).join('；').trim();
     if(!teacher) continue;
+    if(teacherNote) teacherNotes.push({teacher,note:teacherNote,sourceRow:r+1});
     for(const [col,weekday] of Object.entries(weekdayCols)){
-      for(const item of parseRawCourseCell(row[Number(col)],teacher,weekday,year,themeColors)){
+      for(const item of parseRawCourseCell(row[Number(col)],teacher,weekday,dateReference,themeColors)){
         if(item.durationAdjustmentMinutes && ['black','yellow','purple'].includes(item.colorStatus)){
           durationRows.push(item);
           continue;
         }
         if(item.colorStatus==='black' || item.colorStatus==='yellow'){
           fixed.push(item);
-          adjustments.push(...parseRawAdjustmentAnnotations(item,year));
+          adjustments.push(...parseRawAdjustmentAnnotations(item,dateReference));
         } else if(item.colorStatus==='purple'){
-          const oneTime=parseRawPurpleCourse(item,year);
+          const oneTime=parseRawPurpleCourse(item,dateReference);
           if(oneTime.length) adjustments.push(...oneTime);
           else unclassifiedItems.push({...item,note:'[紫色課程待確認] 無法從備註判定單次上課日期或原／新日期'});
         } else if(item.colorStatus==='red'){
@@ -2066,7 +2079,7 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
     const dates=[];
     const seenDates=new Set();
     for(const m of dateMatches){
-      const d=parseDateFlexible(m[1]+'/'+m[2],year);
+      const d=parseDateFlexible(m[1]+'/'+m[2],dateReference);
       if(d && !seenDates.has(d)){
         dates.push(d);
         seenDates.add(d);
@@ -2094,7 +2107,7 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
     }
   }
 
-  return {fixed,adjustments,redItems,unclassifiedItems};
+  return {fixed,adjustments,redItems,unclassifiedItems,teacherNotes};
 }
 
 function matchRawFixedIds(rawFixed, existingFixedRows){
