@@ -11,7 +11,7 @@ process.env.SCHEDULE_ADMIN_TOKEN = 'test-token';
 
 const {
   isYes, isObsoleteImportedRow, parseDateFlexible, splitClassRoster, buildRows, mergeActualRows,
-  parseRawSchedule, dedupeSourceAdjustments, assignPreviewAdjustmentIds, parseAdjust, parseInlineAdjustments, parseFixed, parseSettings, actualObjects, makeReminderRows, adjustmentConflictWarnings, actualIntegrityWarnings, shouldPreserveReminderConfirmation, missingActualEndTimeWarnings
+  parseRawSchedule, dedupeSourceAdjustments, assignPreviewAdjustmentIds, parseAdjust, parseInlineAdjustments, parseFixed, parseSettings, actualObjects, makeReminderRows, adjustmentConflictWarnings, actualIntegrityWarnings, missingRecipientWarnings, notificationTemplateWarnings, shouldPreserveReminderConfirmation, missingActualEndTimeWarnings
 } = require('../server');
 
 const weekday = '一';
@@ -31,6 +31,43 @@ const fixed = (overrides = {}) => ({
 });
 
 
+
+
+test('missing active LINE recipients are reported instead of silently skipping reminders', () => {
+  const rows = buildRows([fixed({ student: '尚哲' })], [], '2026-10-19', 1);
+  const settings = {
+    enabled: '是', parentNotify: '是', teacherNotify: '是', requireConfirm: '是',
+    send_一: '17:00', send_二: '17:00', send_三: '17:00', send_四: '17:00',
+    send_五: '17:00', send_六: '17:00'
+  };
+  const warnings = missingRecipientWarnings(rows, [], settings);
+  assert.ok(warnings.some(w => /家長 LINE 聯絡人/.test(w)));
+  assert.ok(warnings.some(w => /老師.*LINE 聯絡人/.test(w)));
+});
+
+test('missing parent template produces a warning and a non-empty default reminder', () => {
+  const rows = buildRows([fixed({ student: '尚哲' })], [], '2026-10-19', 1);
+  const settings = {
+    enabled: '是', parentNotify: '是', teacherNotify: '否', requireConfirm: '是',
+    send_一: '17:00', send_二: '17:00', send_三: '17:00', send_四: '17:00',
+    send_五: '17:00', send_六: '17:00'
+  };
+  const warnings = notificationTemplateWarnings([], settings);
+  assert.ok(warnings.some(w => /家長一般/.test(w)));
+  const reminders = makeReminderRows(actualObjects(rows), [
+    { name: '尚哲家長', role: '家長', related: '尚哲', userId: 'U-P1' }
+  ], [], settings, new Map([['FS001', '家長一般/老師通知']]));
+  assert.equal(reminders.length, 1);
+  assert.match(reminders[0].content, /尚哲/);
+  assert.match(reminders[0].content, /18:30-20:00/);
+});
+
+test('actual schedule integrity catches overlapping lessons for a student', () => {
+  const first = ['C1','2026-10-19','一','09:00-10:30','尚哲','理化','老師甲','校區甲','固定課表','FS001','','無','','09:00','10:30'];
+  const second = ['C2','2026-10-19','一','10:00-11:00','尚哲','數學','老師乙','校區乙','固定課表','FS002','','無','','10:00','11:00'];
+  const warnings = actualIntegrityWarnings([first, second]);
+  assert.ok(warnings.some(w => /學生上課時段重疊/.test(w)));
+});
 
 test('reminder confirmation is preserved only when the reminder content is unchanged', () => {
   const headers = ['提醒ID','課程日期','上課時間','發送日期','發送時間','身分','收件人','學生/學生成員','課程','老師','校區','訊息內容','確認發送'];
