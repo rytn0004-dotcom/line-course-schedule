@@ -173,10 +173,18 @@ function weekdayLabel(dateStr){
   const [y,m,d]=dateStr.split('-').map(Number); return WEEKDAYS[new Date(Date.UTC(y,m-1,d)).getUTCDay()];
 }
 function compact(v){ return norm(v).replace(/[()（）\[\]【】]/g,''); }
-function includesStudent(related, student){
-  const names = split(related);
-  const target = compact(student);
-  return names.some(n => compact(n) === target);
+function studentShortAlias(value){
+  const name=compact(value);
+  return /^[\\u4e00-\\u9fff]{3}$/.test(name)?name.slice(1):'';
+}
+function includesStudent(related, student, allStudentNames=[]){
+  const names=split(related).map(compact);
+  const target=compact(student);
+  if(names.includes(target)) return true;
+  const alias=studentShortAlias(student);
+  if(!alias||!names.includes(alias)) return false;
+  const conflicting=(allStudentNames||[]).filter(name=>studentShortAlias(name)===alias&&compact(name)!==target);
+  return conflicting.length===0;
 }
 function previousReminderSlot(courseDate, settings){
   let sendDate = addDays(courseDate, -1);
@@ -449,22 +457,33 @@ function parseAdjust(rows, correctionRows=[], referenceDate=todayKey()){
             });
           }
 
-          // 「10/3嘉恆請假」以及「9/25~27p」：
-          // 後者代表 9/25～9/27 整段期間請假，不是一般備註。
-          const leaveRangeRe=/(\d{1,2})\/(\d{1,2})\s*[~～\-至]\s*(\d{1,2})\/(\d{1,2})[^()]*?(?:p)?\s*請?假|(?:\()?\s*(\d{1,2})\/(\d{1,2})\s*[~～\-至]\s*(\d{1,2})\/(\d{1,2})\s*p\s*\)?/gi;
+          // 支援 9/25~9/27請假、9/25~27p、(9/25~27p)，最多展開 31 天。
+          const leaveRangeRe=/\(?\s*(\d{1,2})\/(\d{1,2})\s*[~～\-至]\s*(?:(\d{1,2})\/)?(\d{1,2})\s*(?:p|請假)\s*\)?/gi;
           while((m=leaveRangeRe.exec(text))){
+            if(!inlineStudent||!inlineTime) continue;
             const from=parseDateFlexible(m[1]+'/'+m[2],referenceDate);
-            const to=parseDateFlexible(m[3]+'/'+m[4],referenceDate);
-            if(!inlineStudent || !inlineTime || !from || !to) continue;
-            for(let leaveDate=from; leaveDate<=to; leaveDate=addDays(leaveDate,1)){
+            if(!from) continue;
+            const endMonth=m[3]||m[1];
+            let to=parseDateFlexible(endMonth+'/'+m[4],from);
+            if(!m[3]&&to&&to<from){
+              const [sy,sm]=from.split('-').map(Number);
+              const next=new Date(Date.UTC(sy,sm,Number(m[4])));
+              to=String(next.getUTCFullYear())+'-'+String(next.getUTCMonth()+1).padStart(2,'0')+'-'+String(next.getUTCDate()).padStart(2,'0');
+            }
+            if(!to||!isValidDateKey(to)) continue;
+            let leaveDate=from,count=0;
+            while(leaveDate<=to&&count<31){
               pushCorrection({
                 id:'CORR-NOTE-LEAVE-'+(i+1)+'-'+leaveDate+'-'+compact(inlineStudent),
                 fixedId:'',originalDate:leaveDate,originalTime:inlineTime,action:'請假',
                 newDate:leaveDate,newTime:inlineTime,student:inlineStudent,
-                course:'',teacher:'',site:'',
                 note:'來源：課程校正備註；'+line+'（'+from+'～'+to+'請假）',source:'課程校正'
               });
+              count++;
+              if(leaveDate===to) break;
+              leaveDate=addDays(leaveDate,1);
             }
+            if(leaveDate<to) console.warn('[SCHEDULE-LEAVE-RANGE] 請假區間超過 31 天，已截斷',from,to,inlineStudent);
           }
 
           // 單日請假，例如「10/3嘉恆請假」。
@@ -1001,6 +1020,10 @@ function reminderGroupId(item){
 
 function makeReminderRows(actual, contacts, templates, settings, fixedTemplateById){
   const raw=[];
+  const allStudentNames=Array.from(new Set(actual.flatMap(item=>{
+    const roster=splitClassRoster(item.student);
+    return normalizeMemberList(roster.course?roster.students:item.student);
+  })));
   const requireConfirm = isYes(settings.requireConfirm,true);
 
   for(const c of actual){
@@ -1018,7 +1041,7 @@ function makeReminderRows(actual, contacts, templates, settings, fixedTemplateBy
       const studentMembers = normalizeMemberList(roster.course?roster.students:c.student);
       const parentStudents = studentMembers.length ? studentMembers : [c.student];
       for(const studentMember of parentStudents){
-        for(const person of contacts.filter(x=>x.role==='家長' && includesStudent(x.related,studentMember))){
+        for(const person of contacts.filter(x=>x.role==='家長' && includesStudent(x.related,studentMember,allStudentNames))){
         const preferred = fixedTemplateById.get(c.fixedId) || '';
         const template=chooseTemplate(templates,'家長',preferred);
         raw.push({
@@ -1559,7 +1582,7 @@ function missingReminderTimeWarnings(actualRows, contacts, settings){
       const roster=splitClassRoster(c.student);
       const members=normalizeMemberList(roster.course?roster.students:c.student);
       for(const name of members){
-        for(const person of contacts.filter(x=>x.role==='家長'&&includesStudent(x.related,name))){
+        for(const person of contacts.filter(x=>x.role==='家長'&&includesStudent(x.related,name,actualObjects(actualRows).map(v=>v.student)))){
           add(day,['家長',compact(person.name),c.date,c.time,compact(c.teacher),compact(c.site)].join('|'));
         }
       }
