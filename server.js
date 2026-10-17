@@ -679,7 +679,7 @@ function buildRows(fixed, adjusts, fromDate, days){
   for(const a of orderedAdjusts){
     if(!a.originalDate) continue;
     const action=norm(a.action);
-    const isWholeDay=/整日/.test(action)&&!str(a.student);
+    const isWholeDay=/整日/.test(action)&&!str(a.student)&&!str(a.course)&&!str(a.teacher)&&!str(a.site);
     if(isWholeDay && /(?:停課|取消)/.test(action)){
       if(!dateWide.has(a.originalDate)) dateWide.set(a.originalDate,{cancel:true,moves:[]});
       dateWide.get(a.originalDate).cancel=true;
@@ -777,7 +777,7 @@ function buildRows(fixed, adjusts, fromDate, days){
   }
 
   for(const a of orderedAdjusts){
-    if(!a.originalDate||inWindow(a.originalDate)||!inWindow(a.newDate)||str(a.student)) continue;
+    if(!a.originalDate||inWindow(a.originalDate)||!inWindow(a.newDate)||str(a.student)||str(a.course)||str(a.teacher)||str(a.site)) continue;
     const action=norm(a.action);
     if(!/整日/.test(action)||!/(?:調課|移課|改課)/.test(action)) continue;
     const target=extractMoveDate(a.action,a.originalDate,a.originalDate)||a.newDate;
@@ -1227,16 +1227,15 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
       const getIdx=name=>h[name]===undefined?-1:h[name];
       const preserveMsg = str(row[getIdx('訊息內容')]);
       const preserveConfirm = str(row[getIdx('確認發送')]);
-      const isGeneratedReminder = /-(?:P|T)$/.test(old.id) || old.id.startsWith('MERGED-');
-      Object.assign(row, toOutput({...x,id:old.id}));
-      // 自動產生的提醒（包含 MERGED- 每日老師提醒）必須同步最新學生成員與訊息內容。
-      // 手動建立的提醒（例如 TEST-...）仍保留人工編輯過的訊息。
-      if(preserveMsg && !isGeneratedReminder) row[getIdx('訊息內容')]=preserveMsg;
-      const hasUserVisibleContent =
+      // 必須在覆寫新提醒內容之前檢查舊列，才能識別上次由系統清空並停用的列。
+      const hadUserVisibleContentBeforeUpdate =
         !!str(row[getIdx('學生/學生成員')]) ||
         !!str(row[getIdx('課程')]) ||
         !!str(row[getIdx('訊息內容')]);
-      if(preserveConfirm&&hasUserVisibleContent){
+      const isGeneratedReminder = /-(?:P|T)$/.test(old.id) || old.id.startsWith('MERGED-');
+      Object.assign(row, toOutput({...x,id:old.id}));
+      if(preserveMsg && !isGeneratedReminder) row[getIdx('訊息內容')]=preserveMsg;
+      if(preserveConfirm&&hadUserVisibleContentBeforeUpdate){
         row[getIdx('確認發送')]=isYes(preserveConfirm)?'是':(isNo(preserveConfirm)?'否':x.confirm);
       }
       updates.push({rowNumber:old.rowIndex,values:row});
