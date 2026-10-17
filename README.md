@@ -39,9 +39,18 @@ lineme-service
         ↓
 LINE Push
 
+## 管理端安全設定
+
+`/build` 會改寫 Google Sheet；`/preview-source` 會回傳學生、老師與課表資料，因此兩者都必須通過管理員驗證。
+
+1. 在 Render 的服務 Environment 新增 `SCHEDULE_ADMIN_TOKEN`，設定一組高熵、不可公開的長隨機字串。
+2. 呼叫管理端 API 時，優先使用 HTTP 標頭 `x-admin-token: 你的token`。若只用瀏覽器測試，也支援 `?token=...`，但查詢參數可能留在瀏覽器歷史或伺服器紀錄，不應分享這種 URL。
+3. 若沒有設定 `SCHEDULE_ADMIN_TOKEN`，兩個管理端點會拒絕請求；公開的 `/health` 不需要 token。
+4. 同一時間只允許一個 `/build`；重疊呼叫會回傳 HTTP 409，不會沿用上一個請求的日期參數。
+
 ## /build
 
-GET /build?from=2026-09-16&days=1
+GET /build?from=2026-09-16&days=1（需帶 `x-admin-token` 驗證）
 
 此 API 只整理／寫入課程資料與提醒佇列，**不發 LINE**。
 
