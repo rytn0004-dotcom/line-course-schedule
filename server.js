@@ -669,13 +669,35 @@ function buildRows(fixed, adjusts, fromDate, days){
             break;
           }
           if(/改時間|改課|調課|移課|代課/.test(action)){
-            const nd=a.newDate||d,nt=a.newTime||f.time;
-            out.push({
-              ...base,date:nd,weekday:weekdayLabel(nd),time:nt,
-              student:a.student||f.student,course:a.course||f.course,teacher:a.teacher||f.teacher,
-              site:a.site||f.site,source:a.source||'調課課程',fixedId:f.id,
-              adjustId:a.id||f.id+'-'+d,adjustResult:'已調課',note:a.note||''
-            });
+            const moveActions=adj.filter(x=>
+              /調課|移課|改課|代課/.test(norm(x.action))&&
+              x.newDate&&x.newDate!==d
+            );
+            if(moveActions.length>1){
+              const emitted=new Set();
+              for(const move of moveActions){
+                const nd=move.newDate,nt=move.newTime||f.time;
+                const moveKey=[nd,nt,compact(move.student||f.student),compact(move.teacher||f.teacher)].join('|');
+                if(emitted.has(moveKey))continue;
+                emitted.add(moveKey);
+                out.push({
+                  ...base,date:nd,weekday:weekdayLabel(nd),time:nt,
+                  student:move.student||f.student,course:move.course||f.course,
+                  teacher:move.teacher||f.teacher,site:move.site||f.site,
+                  source:move.source||'調課課程',fixedId:f.id,
+                  adjustId:move.id||f.id+'-'+d+'-'+nd,adjustResult:'已調課',
+                  note:move.note||''
+                });
+              }
+            }else{
+              const nd=a.newDate||d,nt=a.newTime||f.time;
+              out.push({
+                ...base,date:nd,weekday:weekdayLabel(nd),time:nt,
+                student:a.student||f.student,course:a.course||f.course,teacher:a.teacher||f.teacher,
+                site:a.site||f.site,source:a.source||'調課課程',fixedId:f.id,
+                adjustId:a.id||f.id+'-'+d,adjustResult:'已調課',note:a.note||''
+              });
+            }
             handled=true;
             break;
           }
@@ -2056,6 +2078,21 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
           continue;
         }
 
+        // A row placed in the target weekday cell for a cross-weekday move is a date-scoped target,
+        // not a new recurring fixed class. Keep its adjustment so the source lesson can be moved here.
+        const annotatedMoves=parseRawAdjustmentAnnotations(item,year).filter(a=>
+          a.originalDate&&a.newDate&&a.originalDate!==a.newDate&&
+          weekdayLabel(a.newDate)===item.weekday&&
+          weekdayLabel(a.originalDate)!==item.weekday
+        );
+        if(annotatedMoves.length){
+          adjustments.push(...annotatedMoves.map(a=>({
+            ...a,
+            note:'[單次課程] 目的日課程；'+str(a.note||item.raw||item.student)
+          })));
+          continue;
+        }
+
         // The source timetable may put a substitution in a black-font target cell as well as a purple one.
         // Keep only the date-scoped replacement; do not accidentally turn "代戴老師" into a weekly class.
         if(/代戴老師/.test((item.annotations||[]).join('；'))&&item.teacher==='楊詔鈞'&&['凱荻','昜寧'].includes(str(item.student).replace(/英文$/,''))){
@@ -2127,9 +2164,13 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
   const deduped=[],byTarget=new Map();
   const priority=a=>
     (a.newDate&&a.weekday===weekdayLabel(a.newDate)?100:0)+
+    (/\[單次課程\]|\[單次／紫色調課\]|\[紫色調課\]/.test(str(a.note))?30:0)+
     (str(a.course)?20:0)+
     (a.originalDate?10:0)+
     (a.action==='調課'?4:a.action==='改時間'?4:a.action==='代課'?3:a.action==='補課'?1:2);
+  const isMoveOrigin=a=>
+    a.originalDate&&a.newDate&&a.originalDate!==a.newDate&&
+    /調課|移課|改課|代課/.test(norm(a.action));
   for(const adj of adjustments){
     if(!adj.newDate||!adj.student){deduped.push(adj);continue;}
     const isCancel=/^(請假|取消|停課)$/.test(adj.action);
@@ -2141,10 +2182,33 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
       compact(normalizeSite(adj.site))
     ].join('|');
     const oldIndex=byTarget.get(key);
-    if(oldIndex===undefined){byTarget.set(key,deduped.length);deduped.push(adj);}
-    else if(priority(adj)>priority(deduped[oldIndex]))deduped[oldIndex]=adj;
-  }
+    if(oldIndex===undefined){byTarget.set(key,deduped.length);deduped.push(adj);continue;}
 
+    const previous=deduped[oldIndex];
+    const winner=priority(adj)>priority(previous)?adj:previous;
+    const originCandidates=[previous,adj].filter(isMoveOrigin);
+    if(originCandidates.length){
+      // Preserve the original date/time needed to replace the source lesson, while using
+      // the destination cell's time/course/teacher where that row is more authoritative.
+      originCandidates.sort((x,y)=>{
+        const xIsSourceCell=x.weekday!==weekdayLabel(x.newDate)?1:0;
+        const yIsSourceCell=y.weekday!==weekdayLabel(y.newDate)?1:0;
+        return yIsSourceCell-xIsSourceCell;
+      });
+      const origin=originCandidates[0];
+      const merged={
+        ...winner,
+        originalDate:origin.originalDate,
+        originalTime:origin.originalTime,
+        action:origin.action,
+        fixedId:origin.fixedId||winner.fixedId||'',
+        note:[str(winner.note),str(origin.note)&&str(origin.note)!==str(winner.note)?'原始調課：'+str(origin.note):''].filter(Boolean).join('；')
+      };
+      deduped[oldIndex]=merged;
+    }else{
+      deduped[oldIndex]=winner;
+    }
+  }
   return {fixed,adjustments:deduped,redItems,unclassifiedItems};
 }
 
