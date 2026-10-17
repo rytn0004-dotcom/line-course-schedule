@@ -1607,12 +1607,14 @@ function parseRawPurpleCourse(item, year = new Date().getFullYear()){
     }else{
       const singleDate=parseSingleDateOnlyNote(annotations,year);
       const addDate=annotationText.match(/(\d{1,2})\/(\d{1,2})[^()（）]*?(?:補課|加課)/);
+      const addCourse=annotationText.match(/(\d{1,2})\/(\d{1,2})\s*([^()（）]*?)\s*(?:補課|加課)/);
       if(singleDate){
         newDate=singleDate;
         action='補課';
       }else if(addDate){
         newDate=parseDateFlexible(addDate[1]+'/'+addDate[2],year);
         action='加課';
+        if(addCourse&&str(addCourse[3]))item.course=str(addCourse[3]);
       }
     }
   }
