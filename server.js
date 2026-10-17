@@ -1576,15 +1576,14 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
     }
   }
   const fixedIdByKey=new Map(matchedFixed.map(x=>[rawFixedLogicalKey(x),x.id]));
-  const assignedAdjustments=assignPreviewAdjustmentIds(
-    parsed.adjustments.map(x=>({...x,fixedId:fixedIdByKey.get([
-      norm(x.weekday),
-      parseTimeRange(x.originalTime).start||timeKey(x.originalTime),
-      compact(stripScheduleAnnotation(x.student)),
-      compact(stripScheduleAnnotation(x.teacher))
-    ].join('|'))||x.fixedId||''})),
-    adjustRows
-  );
+  const mappedSourceAdjustments=parsed.adjustments.map(x=>({...x,fixedId:fixedIdByKey.get([
+    norm(x.weekday),
+    parseTimeRange(x.originalTime).start||timeKey(x.originalTime),
+    compact(stripScheduleAnnotation(x.student)),
+    compact(stripScheduleAnnotation(x.teacher))
+  ].join('|'))||x.fixedId||''}));
+  const dedupedSourceAdjustments=dedupeSourceAdjustments(mappedSourceAdjustments);
+  const assignedAdjustments=assignPreviewAdjustmentIds(dedupedSourceAdjustments.rows,adjustRows);
   const activeSourceAdjustIds=new Set(assignedAdjustments.map(x=>x.id));
   const adjustUpdates=[];
   const adjustmentTimeCorrections=[];
@@ -1685,6 +1684,7 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
     sourceSheet:'開學課表',
     sourceFixedParsed:parsed.fixed.length,
     sourceAdjustmentsParsed:parsed.adjustments.length,
+    duplicateSourceAdjustmentsSuppressed:dedupedSourceAdjustments.suppressed,
     fixedAdded:fixedOutput.length,
     fixedCorrected:fixedUpdates.length,
     adjustmentsAdded:adjustOutput.length,
@@ -1695,6 +1695,7 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
     unclassifiedSamples:parsed.unclassifiedItems.slice(0,5).map(x=>({teacher:x.teacher,weekday:x.weekday,time:x.time,student:x.student,note:x.note})),
     teacherNotes:parsed.teacherNotes.slice(0,10),
     warnings:[
+      ...(dedupedSourceAdjustments.suppressed ? ['來源解析產生 '+dedupedSourceAdjustments.suppressed+' 筆完全相同的調課，已合併，避免重複匯入。'] : []),
       ...(parsed.unclassifiedItems.length ? ['來源課表有 '+parsed.unclassifiedItems.length+' 筆課程無法自動判讀，未自動匯入；例：'+parsed.unclassifiedItems.slice(0,3).map(x=>[x.teacher,x.weekday,x.time,x.student].filter(Boolean).join(' ')).join('、')] : []),
       ...(parsed.teacherNotes.length ? ['來源課表有 '+parsed.teacherNotes.length+' 筆老師欄附加備註；程式目前只保留供人工檢查，未自動把備註轉成停課／有效期限規則。例：'+parsed.teacherNotes.slice(0,3).map(x=>x.teacher+'：'+x.note).join('；')] : [])
     ],
@@ -2239,6 +2240,33 @@ function matchRawFixedIds(rawFixed, existingFixedRows){
   });
 }
 
+function sourceAdjustmentStart(x){
+  const range=parseTimeRange(x && x.newTime);
+  return range.start||timeKey(x && x.newTime)||str(x && x.newTime);
+}
+function sourceAdjustmentEnd(x){
+  const range=parseTimeRange(x && x.newTime);
+  return timeKey(x && x.newEndTime)||range.end||'';
+}
+function sourceAdjustmentSignature(x){
+  return [
+    str(x && x.fixedId),str(x && x.originalDate),timeKey(x && x.originalTime)||str(x && x.originalTime),
+    norm(x && x.action),str(x && x.newDate),sourceAdjustmentStart(x),sourceAdjustmentEnd(x),
+    compact(x && x.student),compact(x && x.course),compact(x && x.teacher),compact(x && x.site)
+  ].join('|');
+}
+function dedupeSourceAdjustments(adjustments){
+  const unique=[],seen=new Set();
+  let suppressed=0;
+  for(const x of adjustments||[]){
+    const key=sourceAdjustmentSignature(x);
+    if(seen.has(key)){ suppressed++; continue; }
+    seen.add(key);
+    unique.push(x);
+  }
+  return {rows:unique,suppressed};
+}
+
 function assignPreviewAdjustmentIds(adjustments, existingAdjustRows){
   const existing=[];
   const hr=findHeaderRow(existingAdjustRows,['調課ID','原固定課表ID','原日期','原時間','動作','新日期','新時間','學生','確認']);
@@ -2246,38 +2274,56 @@ function assignPreviewAdjustmentIds(adjustments, existingAdjustRows){
     const h=hmap(existingAdjustRows[hr]);
     for(let i=hr+1;i<existingAdjustRows.length;i++){
       const r=existingAdjustRows[i]||[], id=str(r[h['調課ID']]);
-      if(id) existing.push({id,fixedId:str(r[h['原固定課表ID']]),originalDate:parseDateFlexible(r[h['原日期']]),originalTime:timeKey(r[h['原時間']]),action:str(r[h['動作']]),newDate:parseDateFlexible(r[h['新日期']]),newTime:parseTimeRange(r[h['新時間']]).start||timeKey(r[h['新時間']]),student:str(r[h['學生']]),note:h['備註']===undefined?'':str(r[h['備註']])});
+      if(id){
+        const newRange=parseTimeRange(r[h['新時間']]);
+        existing.push({
+          id,fixedId:str(r[h['原固定課表ID']]),originalDate:parseDateFlexible(r[h['原日期']]),
+          originalTime:timeKey(r[h['原時間']]),action:str(r[h['動作']]),newDate:parseDateFlexible(r[h['新日期']]),
+          newTime:newRange.start||timeKey(r[h['新時間']]),newEndTime:newRange.end||'',
+          student:str(r[h['學生']]),course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),
+          site:str(r[h['新校區']]),note:h['備註']===undefined?'':str(r[h['備註']])
+        });
+      }
     }
   }
   let max=0;
-  for(const x of existing){ const m=x.id.match(/^ADJ(\d+)$/i); if(m) max=Math.max(max,Number(m[1])); }
-  const keyOf=x=>[x.fixedId||'',x.originalDate||'',x.originalTime||'',x.action||'',x.newDate||'',x.newTime||'',compact(x.student||'')].join('|');
-  const byKey=new Map(existing.map(x=>[keyOf(x),x.id]));
+  for(const x of existing){ const m=x.id.match(/^ADJ(\\d+)$/i); if(m) max=Math.max(max,Number(m[1])); }
+  const keyOf=sourceAdjustmentSignature;
+  const byKey=new Map();
+  for(const x of existing){
+    const key=keyOf(x);
+    if(!byKey.has(key)) byKey.set(key,x.id);
+  }
   const used=new Set(existing.map(x=>x.id));
-  return adjustments.map(x=>{
-    const key=keyOf(x); let id=byKey.get(key);
-    // 舊版紫色單次課程可能已綁定到錯誤固定課表 ID，
-    // 使完整 key 不一致。若唯一一筆「本程式匯入的紫色課程」
-    // 在日期、開始時間、學生與動作上完全相同，沿用舊 ID，
-    // 才能就地補足下課時間，而不是再新增一筆重複調課。
-    if(x.colorStatus==='purple' && x.newDate && timeKey(x.newTime) && x.student){
-      const candidates=existing.filter(y=>
-        // 舊版資料備註可能沒有「來源：開學課表」前綴；
-        // 以紫色標記、日期、開始時間、學生和動作一起比對。
-        y.note.includes('[紫色調課]') &&
-        y.action===str(x.action) &&
-        y.newDate===x.newDate &&
-        timeKey(y.newTime)===timeKey(x.newTime) &&
-        compact(y.student)===compact(x.student)
-      );
-      // 前次錯誤建置可能已新增帶有「來源：開學課表自動解析」前綴的重複列。
-      // 若唯一的舊列以 [紫色調課] 開頭，優先沿用它，讓來源同步可同時停用重複列。
-      const legacyRows=candidates.filter(y=>y.note.trim().startsWith('[紫色調課]'));
-      if(legacyRows.length===1) id=legacyRows[0].id;
+  const assignedIds=new Map();
+  const allocate=()=>{
+    let id;
+    do{id='ADJ'+String(++max).padStart(3,'0');}while(used.has(id));
+    used.add(id);
+    return id;
+  };
+  return (adjustments||[]).map(x=>{
+    const signature=keyOf(x);
+    let id=byKey.get(signature)||'';
+    const start=sourceAdjustmentStart(x);
+    const end=sourceAdjustmentEnd(x);
+    // 舊匯入列可能只存開始時間，且原固定課表 ID 不正確。
+    // 僅在舊列是本程式匯入、日期／開始時間／學生／動作唯一吻合且缺少結束時間時沿用 ID。
+    if(!id && x.newDate && start && x.student){
+      const candidates=existing.filter(y=>{
+        const ownedNote=y.note.includes('[紫色調課]')||y.note.includes('來源：開學課表自動解析');
+        return ownedNote && !sourceAdjustmentEnd(y) &&
+          norm(y.action)===norm(x.action) && y.newDate===x.newDate &&
+          sourceAdjustmentStart(y)===start && compact(y.student)===compact(x.student);
+      });
+      const legacyPurple=candidates.filter(y=>y.note.trim().startsWith('[紫色調課]'));
+      if(legacyPurple.length===1) id=legacyPurple[0].id;
       else if(candidates.length===1) id=candidates[0].id;
     }
-    if(!id){do{id='ADJ'+String(++max).padStart(3,'0');}while(used.has(id)); used.add(id); byKey.set(key,id);}
-    return {...x,id};
+    if(id && assignedIds.has(id) && assignedIds.get(id)!==signature) id='';
+    if(!id) id=allocate();
+    assignedIds.set(id,signature);
+    return {...x,id,newTime:start,newEndTime:end};
   });
 }
 
@@ -2409,6 +2455,6 @@ app.get('/preview-source',async(req,res)=>{
 
 
 if(require.main===module) app.listen(PORT,()=>console.log(`LINE Course Schedule Manager v1.2 listening on ${PORT}`));
-module.exports={app,isYes,isNo,isObsoleteImportedRow,parseDateFlexible,splitClassRoster,normalizeMemberList,parseRawSchedule,assignPreviewAdjustmentIds,parseAdjust,parseInlineAdjustments,parseFixed,parseSettings,buildRows,mergeActualRows,makeReminderRows,mergeReminderItems,actualObjects,adjustmentConflictWarnings,actualIntegrityWarnings,missingReminderTimeWarnings,missingActualEndTimeWarnings,adminAuthorized};
+module.exports={app,isYes,isNo,isObsoleteImportedRow,parseDateFlexible,splitClassRoster,normalizeMemberList,parseRawSchedule,dedupeSourceAdjustments,assignPreviewAdjustmentIds,parseAdjust,parseInlineAdjustments,parseFixed,parseSettings,buildRows,mergeActualRows,makeReminderRows,mergeReminderItems,actualObjects,adjustmentConflictWarnings,actualIntegrityWarnings,missingReminderTimeWarnings,missingActualEndTimeWarnings,adminAuthorized};
 // Safety: do not build or write Google Sheets automatically at startup or on a timer.
 // Use the explicit /build endpoint only after reviewing the source preview.
