@@ -1320,6 +1320,7 @@ async function syncSourceIntoSchedule(){
   const existingAdjustBySignature=new Map();
   const adjustmentUpdates=[];
   const adjustmentRowsUsed=new Set();
+  const expectedTargetKeys=new Set();
   const fixedIdByKey=new Map(matchedFixed.map(x=>[rawFixedLogicalKey(x),x.id]));
   const assignedAdjustments=assignPreviewAdjustmentIds(
     parsed.adjustments.map(x=>({
@@ -1379,6 +1380,14 @@ async function syncSourceIntoSchedule(){
     }
   }
 
+  const targetSignature=x=>[
+    parseDateFlexible(x.newDate)||'',
+    parseTimeRange(x.newTime).start||timeKey(x.newTime)||'',
+    normalizedAdjustStudent(x.student),
+    compact(str(x.teacher)),
+    compact(normalizeSite(x.site))
+  ].join('|');
+
   const makeAdjustmentRow=(x,id,confirm,oldValues=[])=>{
     const row=oldValues.slice();
     while(row.length<adjustHeaders.length)row.push('');
@@ -1402,6 +1411,7 @@ async function syncSourceIntoSchedule(){
 
   const adjustOutput=[];
   for(const x of assignedAdjustments){
+    if(x.newDate&&!/請假|取消|停課/.test(str(x.action)))expectedTargetKeys.add(targetSignature(x));
     const signature=adjustmentSignature(x);
     const exact=existingAdjustById.get(str(x.id));
     const candidates=signature?(existingAdjustBySignature.get(signature)||[]):[];
@@ -1430,7 +1440,31 @@ async function syncSourceIntoSchedule(){
     }
     adjustOutput.push(makeAdjustmentRow(x,x.id,'是'));
   }
+
+  // Retire old parser-owned duplicate rows when a source move and a destination-row
+  // annotation previously created the same target lesson under different IDs.
+  for(const old of existingAdjustById.values()){
+    if(adjustmentRowsUsed.has(old.rowNumber)||!old.sourceImported||!old.newDate)continue;
+    if(/請假|取消|停課/.test(old.action))continue;
+    if(!expectedTargetKeys.has(targetSignature(old)))continue;
+    const values=old.values.slice();
+    while(values.length<adjustHeaders.length)values.push('');
+    if(ah['確認']!==undefined)values[ah['確認']]='否';
+    if(ah['備註']!==undefined){
+      const note=str(values[ah['備註']]);
+      const marker='同步健檢：同一目標日期／學生／開始時間已由新版解析列代表，停用重複舊列';
+      if(!note.includes(marker))values[ah['備註']]=note+'；'+marker;
+    }
+    adjustmentUpdates.push({rowNumber:old.rowNumber,values:values.slice(0,adjustHeaders.length)});
+    adjustmentRowsUsed.add(old.rowNumber);
+  }
   const sourceWriteData=[];
+  for(const u of adjustmentUpdates){
+    sourceWriteData.push({
+      range:qsheet('調課課程')+'!A'+u.rowNumber+':'+columnLetter(adjustHeaders.length)+u.rowNumber,
+      values:[u.values]
+    });
+  }
   for(const u of fixedUpdates){
     sourceWriteData.push({
       range:qsheet('固定課表')+'!A'+u.rowNumber+':'+columnLetter(fixedHeaders.length)+u.rowNumber,
@@ -1466,6 +1500,7 @@ async function syncSourceIntoSchedule(){
     fixedAdded:fixedOutput.length,
     fixedCorrected:fixedUpdates.length,
     adjustmentsAdded:adjustOutput.length,
+    adjustmentsCorrected:adjustmentUpdates.length,
     existingRowsPreserved:true,
     translationEnabled:true
   };
