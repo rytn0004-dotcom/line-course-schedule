@@ -1554,64 +1554,86 @@ function parseRawCourseCell(cell, teacher, weekday, year = new Date().getFullYea
 function parseRawPurpleCourse(item, year = new Date().getFullYear()){
   const annotations=(item.annotations||[]).map(str);
   const annotationText=annotations.join('；');
-  let newDate='', newTime=item.time, action='補課', originNote='';
+  const fullRange=item.endTime?item.time+'-'+item.endTime:item.time;
+  let newDate='',newTime=fullRange,action='補課',originNote='';
 
-  // 紫字的定義是「單次課程」，因此目的日期／時段應建立成獨立課程；
-  // 不把它當作固定課程的移動指令，避免因找不到原時段而漏建。
-  // 範例：9/7p調10/9b -> 單次建立在 10/9，課堂時段使用紫字主行。
+  const weekdayOf=date=>date?weekdayLabel(date):'';
+  const rowTexts=Array.isArray(item.rowCellTexts)?item.rowCellTexts:[];
+  const moveTargetsForStudent=[];
+  for(const cell of rowTexts){
+    for(const line of String(cell.text||'').split(/\r?\n/)){
+      if(!line.includes(str(item.student)))continue;
+      const re=/(\d{1,2})\/(\d{1,2})[^()]*?調\s*(\d{1,2})\/(\d{1,2})/g;
+      let m;
+      while((m=re.exec(line))){
+        const target=parseDateFlexible(m[3]+'/'+m[4],year);
+        if(target&&weekdayOf(target)===item.weekday&&!moveTargetsForStudent.includes(target))moveTargetsForStudent.push(target);
+      }
+    }
+  }
+
+  // Purple notes such as "10/10p調10/9b" represent a one-off lesson on the target date.
   const moveRe=/(?:^|[^0-9])(\d{1,2})\/(\d{1,2})[^()]*?調\s*(\d{1,2})\/(\d{1,2})/;
   const moveMatch=annotationText.replace(/\s+/g,'').match(moveRe);
   if(moveMatch){
     const from=parseDateFlexible(moveMatch[1]+'/'+moveMatch[2],year);
     newDate=parseDateFlexible(moveMatch[3]+'/'+moveMatch[4],year);
-    if(from) originNote='來源日期 '+from+'；';
+    if(from)originNote='來源日期 '+from+'；';
     action='補課';
-  } else {
+  }else{
     const timeMatch=annotationText.match(/(\d{1,2})\/(\d{1,2})\s+(\d{1,2}:?\d{2})\s*[-~～至]\s*(\d{1,2}:?\d{2})/);
     if(timeMatch){
       newDate=parseDateFlexible(timeMatch[1]+'/'+timeMatch[2],year);
-      newTime=timeKey(timeMatch[3])||item.time;
+      newTime=(timeKey(timeMatch[3])||item.time)+'-'+(timeKey(timeMatch[4])||item.endTime);
       action='補課';
-    } else {
-      const onlyDate=annotationText.match(/僅\s*(\d{1,2})\/(\d{1,2})/);
+    }else{
+      const singleDate=parseSingleDateOnlyNote(annotations,year);
       const addDate=annotationText.match(/(\d{1,2})\/(\d{1,2})[^()（）]*?(?:補課|加課)/);
-      if(onlyDate){
-        newDate=parseDateFlexible(onlyDate[1]+'/'+onlyDate[2],year);
+      if(singleDate){
+        newDate=singleDate;
         action='補課';
-      } else if(addDate){
+      }else if(addDate){
         newDate=parseDateFlexible(addDate[1]+'/'+addDate[2],year);
         action='加課';
       }
     }
   }
 
-  // 2026/10/08 更新課表的星期五欄位，對應當週 2026/10/09。
-  // 楊詔鈞代戴老師的兩筆是代課；郁翔則是可能延長半小時，不改原定起始時間。
-  const isKnownSubstitute = item.teacher==='楊詔鈞' &&
-    ['凱荻','昜寧'].includes(str(item.student).replace(/英文$/,'')) &&
-    /代戴老師/.test(annotationText) && item.weekday==='五';
-  const isPossibleExtension = /可能加半小|可能延長半小時/.test(annotationText) &&
-    str(item.student).includes('郁翔') && item.weekday==='五';
-  if(!newDate && isKnownSubstitute){
-    newDate='2026-10-09';
-    action='代課';
-    originNote='10/8更新課表；星期五對應當週10/9；';
+  const isKnownSubstitute=item.teacher==='楊詔鈞'&&
+    ['凱荻','昜寧'].includes(str(item.student).replace(/英文$/,''))&&
+    /代戴老師/.test(annotationText)&&item.weekday==='五';
+  const isPossibleExtension=/可能加半小|可能延長半小時/.test(annotationText)&&
+    str(item.student).includes('郁翔')&&item.weekday==='五';
+
+  if(!newDate&&isKnownSubstitute){
+    // Use the explicit date anchor in this teacher's cell (e.g. another Friday class marked 10/9p).
+    const anchors=[...String(item.cellText||'').matchAll(/(\d{1,2})\/(\d{1,2})p/gi)]
+      .map(m=>parseDateFlexible(m[1]+'/'+m[2],year))
+      .filter(d=>d&&weekdayOf(d)===item.weekday);
+    newDate=anchors[0]||moveTargetsForStudent[0]||'';
+    if(newDate){
+      action='代課';
+      originNote='同一來源儲存格的指定日期錨點 '+newDate+'；';
+    }
   }
-  if(!newDate && isPossibleExtension){
-    newDate='2026-10-09';
-    action='補課';
-    originNote='10/8更新課表；星期五對應當週10/9；';
+  if(!newDate&&isPossibleExtension){
+    newDate=moveTargetsForStudent[0]||'';
+    if(newDate){
+      action='補課';
+      originNote='依同一教師列、相同學生的調課目標日期推定 '+newDate+'；';
+    }
   }
-  if(!newDate) return [];
+  if(!newDate)return [];
+
   const extensionNote=isPossibleExtension?'；[可能延長30分鐘，待確認；不變更原定時間]':'';
-  const studentName=isKnownSubstitute ? str(item.student).replace(/英文$/,'') : item.student;
-  const courseName=isKnownSubstitute ? '英文' : item.course;
+  const studentName=isKnownSubstitute?str(item.student).replace(/英文$/,''):item.student;
+  const courseName=isKnownSubstitute?'英文':item.course;
   return [{
     id:'',fixedId:'',weekday:item.weekday,originalDate:'',originalTime:'',
     action,newDate,newTime,student:studentName,course:courseName,
     teacher:item.teacher,site:item.site,
-    note:'[紫色調課] '+originNote+'單次課程：'+(item.raw||item.student)+'；備註：'+(annotationText||'無')+'；字色 '+(item.colorHex||'未知')+extensionNote,
-    source:'開學課表',colorStatus:'purple',colorHex:item.colorHex||''
+    note:'[單次／紫色調課] '+originNote+'課程：'+(item.raw||item.student)+'；備註：'+(annotationText||'無')+'；字色 '+(item.colorHex||'未知')+extensionNote,
+    source:'開學課表',colorStatus:item.colorStatus,colorHex:item.colorHex||''
   }];
 }
 
