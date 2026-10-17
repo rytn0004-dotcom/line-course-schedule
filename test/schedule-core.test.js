@@ -249,3 +249,26 @@ test('missing course end time is reported rather than silently treated as comple
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /缺少下課時間/);
 });
+
+
+test('single-course adjustment can override course and teacher without changing unrelated fixed courses', () => {
+  const courseRows = [
+    fixed({ id: 'FS001', student: '尚哲' }),
+    fixed({ id: 'FS002', student: '芯瑜', course: '數學', teacher: '李老師' })
+  ];
+  const adjustment = {
+    id: 'ADJ020', fixedId: 'FS001',
+    originalDate: '2026-10-12', originalTime: '18:30',
+    action: '調課', newDate: '2026-10-12', newTime: '18:30', newEndTime: '20:00',
+    student: '尚哲', course: '英文', teacher: '張老師', site: '愛學館信義光復校',
+    source: '調課課程'
+  };
+  const rows = buildRows(courseRows, [adjustment], '2026-10-12', 1);
+  const moved = rows.find(row => row[4] === '尚哲');
+  const unrelated = rows.find(row => row[4] === '芯瑜');
+  assert.equal(moved[5], '英文');
+  assert.equal(moved[6], '張老師');
+  assert.equal(moved[11], '已調課');
+  assert.equal(unrelated[5], '數學');
+  assert.equal(unrelated[6], '李老師');
+});
