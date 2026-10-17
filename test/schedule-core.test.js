@@ -11,7 +11,7 @@ process.env.SCHEDULE_ADMIN_TOKEN = 'test-token';
 
 const {
   isYes, isObsoleteImportedRow, parseDateFlexible, splitClassRoster, buildRows, mergeActualRows,
-  parseRawSchedule, dedupeSourceAdjustments, assignPreviewAdjustmentIds, parseAdjust, parseInlineAdjustments, parseFixed, parseSettings, actualObjects, makeReminderRows, adjustmentConflictWarnings, actualIntegrityWarnings, missingActualEndTimeWarnings
+  parseRawSchedule, dedupeSourceAdjustments, assignPreviewAdjustmentIds, parseAdjust, parseInlineAdjustments, parseFixed, parseSettings, actualObjects, makeReminderRows, adjustmentConflictWarnings, actualIntegrityWarnings, shouldPreserveReminderConfirmation, missingActualEndTimeWarnings
 } = require('../server');
 
 const weekday = '一';
@@ -30,6 +30,17 @@ const fixed = (overrides = {}) => ({
   ...overrides
 });
 
+
+
+test('reminder confirmation is preserved only when the reminder content is unchanged', () => {
+  const headers = ['提醒ID','課程日期','上課時間','發送日期','發送時間','身分','收件人','學生/學生成員','課程','老師','校區','訊息內容','確認發送'];
+  const oldRow = ['MERGED-1','2026-10-17','11:00','2026-10-16','17:00','家長','苡安家長','苡安','數學','鄭雅方','校區甲','提醒：11:00-12:30','是'];
+  const unchanged = oldRow.slice();
+  const changed = oldRow.slice();
+  changed[11] = '提醒：11:00-13:00';
+  assert.equal(shouldPreserveReminderConfirmation(oldRow, unchanged, headers), true);
+  assert.equal(shouldPreserveReminderConfirmation(oldRow, changed, headers), false);
+});
 
 test('system settings fail closed when the reminder master switch is missing or invalid', () => {
   assert.throws(
