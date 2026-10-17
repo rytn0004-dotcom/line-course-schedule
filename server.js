@@ -1046,15 +1046,20 @@ function mergeReminderItems(items){
     const first=group[0];
     const courses=[],courseKeys=new Set(),studentsByCourse=new Map(),scheduleByTime=new Map();
     const parentStudents=[],parentKeys=new Set();
+    const parentRanges=new Map();
     for(const item of group){
       const course=str(item.course)||splitClassRoster(item.student).course;
       const courseKey=compact(course);
       if(course&&!courseKeys.has(courseKey)){ courseKeys.add(courseKey); courses.push(course); }
       const names=normalizeMemberList(item.student);
       if(item.role==='家長'){
+        const range=str(item.timeRange)||fullTime(item.time,item.endTime)||timeKey(item.time)||str(item.time);
+        if(!parentRanges.has(range)) parentRanges.set(range,{names:[],seen:new Set()});
+        const rangeEntry=parentRanges.get(range);
         for(const name of names){
           const k=compact(name);
           if(!parentKeys.has(k)){parentKeys.add(k);parentStudents.push(name);}
+          if(!rangeEntry.seen.has(k)){rangeEntry.seen.add(k);rangeEntry.names.push(name);}
         }
       }else{
         if(!studentsByCourse.has(courseKey)) studentsByCourse.set(courseKey,{course,names:[],seen:new Set()});
@@ -1086,7 +1091,12 @@ function mergeReminderItems(items){
       .map(([time,byCourse])=>time+' '+Array.from(byCourse.values()).map(renderEntry).filter(Boolean).join('、'))
       .join('\n');
     const members=first.role==='老師'?teacherMembers.join('、'):parentStudents.join('、');
-    merged.push({...first,student:members,course:courses.join('、'),members,scheduleLines});
+    const parentRangeEntries=Array.from(parentRanges.entries()).sort((a,b)=>a[0].localeCompare(b[0]));
+    const parentTimeRange=first.role!=='家長' ? first.timeRange :
+      parentRangeEntries.length>1
+        ? parentRangeEntries.map(([range,entry])=>entry.names.join('、')+'：'+range).join('；')
+        : (parentRangeEntries[0]?.[0]||first.timeRange);
+    merged.push({...first,student:members,course:courses.join('、'),members,scheduleLines,timeRange:parentTimeRange});
   }
   return merged;
 }
