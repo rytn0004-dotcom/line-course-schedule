@@ -2143,7 +2143,7 @@ function assignPreviewAdjustmentIds(adjustments, existingAdjustRows){
     // 使完整 key 不一致。若唯一一筆「本程式匯入的紫色課程」
     // 在日期、開始時間、學生與動作上完全相同，沿用舊 ID，
     // 才能就地補足下課時間，而不是再新增一筆重複調課。
-    if(!id && x.colorStatus==='purple' && x.newDate && timeKey(x.newTime) && x.student){
+    if(x.colorStatus==='purple' && x.newDate && timeKey(x.newTime) && x.student){
       const candidates=existing.filter(y=>
         // 舊版資料備註可能沒有「來源：開學課表」前綴；
         // 以紫色標記、日期、開始時間、學生和動作一起比對。
