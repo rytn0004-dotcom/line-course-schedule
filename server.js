@@ -492,6 +492,9 @@ function parseAdjust(rows, correctionRows=[]){
 function parseInlineAdjustments(fixed){
   const out=[];
   for(const f of fixed){
+    // Source workbook annotations are parsed into 調課課程 during source synchronization.
+    // Do not parse their copied audit note a second time as a separate manual adjustment.
+    if(str(f.note).includes('來源：開學課表自動同步')) continue;
     const raw=str(f.rawTime);
     const note=str(f.note);
     const text=raw+' '+note;
@@ -1702,7 +1705,7 @@ function parseRawCourseCell(cell, teacher, weekday, year = new Date().getFullYea
       teacher,weekday,time:start,endTime:end,student,course,site:'',
       annotations,raw:line,cellText:rawText,colorStatus:colorInfo.status,colorHex:colorInfo.hex,
       colorSource:colorInfo.colorSource,durationAdjustmentMinutes,untilDate,
-      note:[colorInfo.status==='yellow'?'[黃色確認中]':'',durationAdjustmentMinutes?'[指定日期加時30分鐘]':'',annotations.some(a=>/可能加半小|可能延長半小時/.test(a))?'[可能延長30分鐘，待確認]':''].filter(Boolean).join('；')
+      note:[colorInfo.status==='yellow'?'[黃色確認中]':'',durationAdjustmentMinutes?'[指定日期加時30分鐘]':'',annotations.some(a=>/可能加半小|可能延長半小時|問要不要加\d+分/.test(a))?'[加時尚待確認]':'',annotations.length?'來源註記：'+annotationText:''].filter(Boolean).join('；')
     });
   }
   return out;
