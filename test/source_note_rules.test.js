@@ -8,7 +8,8 @@ const {
   parseDurationTargetDates,
   parseSameDayTimeChangeNote,
   parseSingleDateOnlyNote,
-  parseTeacherConfirmUntil
+  parseTeacherConfirmUntil,
+  splitWrappedCourseLines
 } = require('../source_note_rules');
 
 test('parses same-day time changes with the source timetable notation', () => {
@@ -48,6 +49,16 @@ test('extracts group members without confusing the group label or date note for 
     ['葉依柔', '陳翊森', '繹桓', '慕萱']
   );
   assert.deepEqual(extractReminderStudentNames('生物團班(10/9 0900-1100)'), []);
+});
+
+test('joins wrapped note lines only when parentheses are still open', () => {
+  const result = splitWrappedCourseLines(
+    '1900-2030繹桓(9/25p調10/5b，\n10/9 1230-1400)\n2030-2200慕萱'
+  );
+  assert.deepEqual(result.map(x => x.text), [
+    '1900-2030繹桓(9/25p調10/5b， 10/9 1230-1400)',
+    '2030-2200慕萱'
+  ]);
 });
 
 test('applies teacher row confirmation windows to the stated month', () => {
