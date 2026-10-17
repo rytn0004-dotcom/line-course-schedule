@@ -11,7 +11,7 @@ process.env.SCHEDULE_ADMIN_TOKEN = 'test-token';
 
 const {
   isYes, isObsoleteImportedRow, parseDateFlexible, splitClassRoster, buildRows, mergeActualRows,
-  parseRawSchedule, assignPreviewAdjustmentIds, parseAdjust, parseInlineAdjustments, parseFixed, actualObjects, makeReminderRows, adjustmentConflictWarnings, actualIntegrityWarnings, missingActualEndTimeWarnings
+  parseRawSchedule, dedupeSourceAdjustments, assignPreviewAdjustmentIds, parseAdjust, parseInlineAdjustments, parseFixed, actualObjects, makeReminderRows, adjustmentConflictWarnings, actualIntegrityWarnings, missingActualEndTimeWarnings
 } = require('../server');
 
 const weekday = '一';
@@ -370,6 +370,38 @@ test('mergeActualRows respects the actual header row instead of always assuming 
   assert.equal(merged.merged[0][1], '2026-12-01');
 });
 
+
+
+test('source adjustment dedupe removes only fully identical normalized rules', () => {
+  const base = {
+    fixedId: 'FS101', originalDate: '', originalTime: '', action: '補課',
+    newDate: '2026-10-17', newTime: '11:00', newEndTime: '12:30',
+    student: '苡安', course: '', teacher: '鄭雅方', site: '愛學館信義光復校'
+  };
+  const result = dedupeSourceAdjustments([
+    { ...base, note: '第一來源' },
+    { ...base, note: '重複來源但文字不同' },
+    { ...base, newEndTime: '13:00' }
+  ]);
+  assert.equal(result.rows.length, 2);
+  assert.equal(result.suppressed, 1);
+  assert.deepEqual(result.rows.map(x => x.newEndTime), ['12:30', '13:00']);
+});
+
+test('two same-start legacy adjustments with different end times never share an ID', () => {
+  const existing = [
+    ['調課ID', '原固定課表ID', '原日期', '原時間', '動作', '新日期', '新時間', '學生', '新課程', '新老師', '新校區', '確認', '備註'],
+    ['ADJ094', '', '', '', '補課', '2026-10-17', '11:00', '苡安', '', '鄭雅方', '', '是', '[紫色調課] 單次課程 1100-1230苡安'],
+    ['ADJ105', 'FS900', '', '', '補課', '2026-10-17', '11:00', '苡安', '', '鄭雅方', '', '是', '來源：開學課表自動解析；[紫色調課] 重複匯入']
+  ];
+  const assigned = assignPreviewAdjustmentIds([
+    { action: '補課', newDate: '2026-10-17', newTime: '11:00', newEndTime: '12:30', student: '苡安', teacher: '鄭雅方', colorStatus: 'purple', note: '[紫色調課] 1100-1230' },
+    { action: '補課', newDate: '2026-10-17', newTime: '11:00', newEndTime: '13:00', student: '苡安', teacher: '鄭雅方', colorStatus: 'purple', note: '[紫色調課] 1100-1300' }
+  ], existing);
+  assert.equal(assigned.length, 2);
+  assert.equal(assigned[0].id, 'ADJ094');
+  assert.notEqual(assigned[0].id, assigned[1].id);
+});
 
 test('actual course integrity warns about duplicates and attendance-time mismatches', () => {
   const row = [
