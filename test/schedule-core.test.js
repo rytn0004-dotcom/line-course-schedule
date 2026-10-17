@@ -246,10 +246,11 @@ test('admin authorization rejects missing or wrong tokens', () => {
 test('legacy purple adjustment reuses its imported ID when the fixed-course link differs', () => {
   const existingRows = [
     ['調課ID', '原固定課表ID', '原日期', '原時間', '動作', '新日期', '新時間', '學生', '新課程', '新老師', '新校區', '確認', '備註'],
-    ['ADJ094', '', '', '', '補課', '2026-10-17', '11:00', '苡安', '', '鄭雅方', '', '是', '[紫色調課] 來源日期 2026-10-16；單次課程：1100-1230苡安(10/16p調10/17b)；備註：10/16p調10/17b；字色 #9900FF']
+    ['ADJ094', '', '', '', '補課', '2026-10-17', '11:00', '苡安', '', '鄭雅方', '', '是', '[紫色調課] 來源日期 2026-10-16；單次課程：1100-1230苡安(10/16p調10/17b)；備註：10/16p調10/17b；字色 #9900FF'],
+    ['ADJ105', 'FS900', '', '', '補課', '2026-10-17', '11:00', '苡安', '', '鄭雅方', '', '是', '來源：開學課表自動解析；[紫色調課] 重複匯入列']
   ];
   const parsed = [{
-    id: '', fixedId: '', originalDate: '', originalTime: '', action: '補課',
+    id: '', fixedId: 'FS900', originalDate: '', originalTime: '', action: '補課',
     newDate: '2026-10-17', newTime: '11:00', newEndTime: '12:30',
     student: '苡安', teacher: '鄭雅方', colorStatus: 'purple',
     note: '[紫色調課] 來源日期 2026-10-16；單次課程：1100-1230苡安'
