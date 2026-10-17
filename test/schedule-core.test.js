@@ -393,6 +393,43 @@ test('multi-date extension applies only to target dates following 調 and not un
   assert.equal(parsed.fixed.filter(x => x.student === '芯瑜').length, 1);
 });
 
+
+test('dated annotation extension uses the base course end time plus the requested minutes', () => {
+  const parsed = parseRawSchedule([
+    ['老師', '星期四'],
+    ['程映真', { value: '1830-2000子淇\n1830-2000子淇(10/8加30分)' }]
+  ], 2026, {}, '2026-10-17');
+  const extension = parsed.adjustments.find(x => x.action === '延長時間' && x.student === '子淇');
+  assert.ok(extension);
+  assert.equal(extension.newEndTime, '20:30');
+  const actual = buildRows(parsed.fixed, [extension], '2026-10-08', 1).find(x => x[4] === '子淇');
+  assert.equal(actual[3], '18:30-20:30');
+  assert.equal(actual[11], '已加時30分鐘');
+});
+
+test('single moved lesson with +45min computes its end from the moved line and not a weekly base', () => {
+  const parsed = parseRawSchedule([
+    ['老師', '星期二'],
+    ['黃政銓', { value: '1800-1845翊森(9/30師p調10/13b+45min)' }]
+  ], 2026, {}, '2026-10-17');
+  const oneTime = parsed.adjustments.find(x => x.student === '翊森' && x.newDate === '2026-10-13');
+  assert.ok(oneTime);
+  assert.equal(oneTime.action, '補課');
+  assert.equal(oneTime.newEndTime, '19:30');
+  const actual = buildRows([], [oneTime], '2026-10-13', 1).find(x => x[4] === '翊森');
+  assert.equal(actual[3], '18:00-19:30');
+});
+
+test('multi-date duration note uses only dates following the move marker and computes each end time', () => {
+  const parsed = parseRawSchedule([
+    ['老師', '星期一'],
+    ['林維軒', { value: '2000-2130芯瑜\n2000-2200芯瑜(9/28p調9/21、10/5、10/12各+30min，除了9/14、9/21、10/5、10/12外都看上面)' }]
+  ], 2026, {}, '2026-10-17');
+  const extensions = parsed.adjustments.filter(x => x.action === '延長時間' && x.student === '芯瑜');
+  assert.deepEqual(extensions.map(x => x.newDate).sort(), ['2026-09-21','2026-10-05','2026-10-12'].sort());
+  assert.ok(extensions.every(x => x.newEndTime === '22:00'));
+});
+
 test('one-time moved lesson with +45min becomes a single extended make-up instead of a weekly fixed row', () => {
   const parsed = parseRawSchedule([
     ['老師', '星期二'],
