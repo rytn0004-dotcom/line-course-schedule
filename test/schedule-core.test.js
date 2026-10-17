@@ -10,7 +10,7 @@ process.env.GOOGLE_SERVICE_ACCOUNT_JSON = JSON.stringify({
 process.env.SCHEDULE_ADMIN_TOKEN = 'test-token';
 
 const {
-  isYes, parseDateFlexible, splitClassRoster, buildRows, mergeActualRows,
+  isYes, isObsoleteImportedRow, parseDateFlexible, splitClassRoster, buildRows, mergeActualRows,
   parseAdjust, parseInlineAdjustments, actualObjects, makeReminderRows, missingActualEndTimeWarnings
 } = require('../server');
 
@@ -283,4 +283,14 @@ test('fixed-course note leave range supports the abbreviated end day form', () =
   })], '2026-09-01');
   const dates = adjustments.filter(x => x.action === '請假').map(x => x.originalDate).sort();
   assert.deepEqual(dates, ['2026-09-25', '2026-09-26', '2026-09-27']);
+});
+
+
+test('source reconciliation disables only obsolete rows owned by the source importer', () => {
+  const activeIds = new Set(['FS100', 'ADJ100']);
+  assert.equal(isObsoleteImportedRow('FS101', '來源：開學課表自動同步', activeIds, '來源：開學課表自動同步'), true);
+  assert.equal(isObsoleteImportedRow('FS100', '來源：開學課表自動同步', activeIds, '來源：開學課表自動同步'), false);
+  assert.equal(isObsoleteImportedRow('FS101', '人工建立的固定課程', activeIds, '來源：開學課表自動同步'), false);
+  assert.equal(isObsoleteImportedRow('ADJ101', '來源：開學課表自動解析', activeIds, '來源：開學課表'), true);
+  assert.equal(isObsoleteImportedRow('ADJ101', '人工調課', activeIds, '來源：開學課表'), false);
 });
