@@ -2273,6 +2273,14 @@ function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
       const newStart=timeKey(m[3]), newEnd=timeKey(m[4]);
       if(d && newStart && newEnd) out.push({id:'',fixedId:'',weekday:item.weekday,colorStatus:item.colorStatus,colorHex:item.colorHex,originalDate:d,originalTime:item.time,originalEndTime:item.endTime||'',action:'改時間',newDate:d,newTime:newStart,newEndTime:newEnd,student:item.student,course:item.course,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note+'（調整後時段 '+newStart+'-'+newEnd+'）',source:'開學課表'});
     }
+    // 單日只改科目，例如「10/15改上地理」；不把「改1000-1200」誤當成科目。
+    const courseChangeRe=/(\d{1,2})\/(\d{1,2})[^()]*?改(?:上)?([^\s，,、；()（）]+)/g;
+    while((m=courseChangeRe.exec(text))){
+      const d=parseDateFlexible(m[1]+'/'+m[2],year);
+      const courseHint=str(m[3]).replace(/^上/,'').trim();
+      if(!d||!courseHint||timeKey(courseHint)||parseTimeRange(courseHint).start) continue;
+      out.push({id:'',fixedId:'',weekday:item.weekday,colorStatus:item.colorStatus,colorHex:item.colorHex,originalDate:d,originalTime:item.time,originalEndTime:item.endTime||'',action:'改課',newDate:d,newTime:item.time,newEndTime:item.endTime||'',student:item.student,course:courseHint,teacher:item.teacher,site:item.site,note:'來源：開學課表；'+note+'（單日改科目：'+courseHint+'）',source:'開學課表'});
+    }
     const moveRe=/(\d{1,2})\/(\d{1,2})[^()]*?調\s*(\d{1,2})\/(\d{1,2})/g;
     while((m=moveRe.exec(text))){
       const from=parseDateFlexible(m[1]+'/'+m[2],year);
