@@ -1381,26 +1381,38 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
   // 在「系統設定」新增可手動切換的「轉譯開學課表」；未設定時預設開啟。
   const settingsRead=await retry('read source translation setting',()=>sheets.spreadsheets.values.get({spreadsheetId:SHEET_ID,range:qsheet('系統設定')+'!A:Z'}));
   const settingsRows=settingsRead.data.values||[];
+  const settingsHeaderRow=findHeaderRow(settingsRows,['設定項目','目前值']);
+  if(settingsHeaderRow<0) throw new Error('來源同步停止：「系統設定」缺少「設定項目／目前值」標題，為避免寫錯欄位，未修改試算表。');
+  const settingsHeader=hmap(settingsRows[settingsHeaderRow]);
+  const settingsItemCol=settingsHeader['設定項目'], settingsValueCol=settingsHeader['目前值'];
   let translationRow=-1;
-  for(let i=0;i<settingsRows.length;i++){
-    if(str(settingsRows[i]?.[0])==='轉譯開學課表'){ translationRow=i+1; break; }
+  for(let i=settingsHeaderRow+1;i<settingsRows.length;i++){
+    if(str(settingsRows[i]?.[settingsItemCol])==='轉譯開學課表'){ translationRow=i+1; break; }
   }
   let translateSource='是';
   if(translationRow<0){
-    await retry('add source translation setting',()=>sheets.spreadsheets.values.append({spreadsheetId:SHEET_ID,range:qsheet('系統設定')+'!A:B',valueInputOption:'RAW',insertDataOption:'INSERT_ROWS',requestBody:{values:[['轉譯開學課表','是']]}}));
+    const newRowNumber=settingsRows.length+1;
+    const settingsWidth=Math.max((settingsRows[settingsHeaderRow]||[]).length,settingsItemCol+1,settingsValueCol+1);
+    const newSettingRow=new Array(settingsWidth).fill('');
+    newSettingRow[settingsItemCol]='轉譯開學課表';
+    newSettingRow[settingsValueCol]='是';
+    await retry('add source translation setting',()=>sheets.spreadsheets.values.update({
+      spreadsheetId:SHEET_ID,range:qsheet('系統設定')+'!A'+newRowNumber+':'+columnLetter(settingsWidth)+newRowNumber,
+      valueInputOption:'RAW',requestBody:{values:[newSettingRow]}
+    }));
   }else{
-    translateSource=str(settingsRows[translationRow-1]?.[1]) || '是';
+    translateSource=str(settingsRows[translationRow-1]?.[settingsValueCol]) || '是';
   }
   if(!isYes(translateSource)){
-    return {sourceSheet:'開學課表',translationEnabled:false,sourceFixedParsed:0,sourceAdjustmentsParsed:0,fixedAdded:0,fixedCorrected:0,adjustmentsAdded:0,existingRowsPreserved:true,skipped:true};
+    return {sourceSheet:'開學課表',translationEnabled:false,sourceFixedParsed:0,sourceAdjustmentsParsed:0,fixedAdded:0,fixedCorrected:0,adjustmentsAdded:0,existingRowsPreserved:true,skipped:true,warnings:[]};
   }
   const year=Number(String(referenceDate).slice(0,4))||Number(todayKey().slice(0,4));
   const {rawRows,fixedRows,adjustRows,themeColors}=await readRawSourcePreview();
   const parsed=parseRawSchedule(rawRows,year,themeColors,referenceDate);
-  const fixedHeaderRow=findHeaderRow(fixedRows,['固定課表ID','星期','上課時間','學生','課程','老師','校區','有效迄日','啟用']);
-  if(fixedHeaderRow<0) throw new Error('來源同步停止：固定課表欄位不正確，沒有寫入任何資料。');
-  const adjustHeaderRow=findHeaderRow(adjustRows,['調課ID','原固定課表ID','原日期','原時間','動作','新日期','新時間','學生','確認']);
-  if(adjustHeaderRow<0) throw new Error('來源同步停止：調課課程欄位不正確；尚未寫入固定課表或調課資料。');
+  const fixedHeaderRow=findHeaderRow(fixedRows,['固定課表ID','星期','上課時間','學生','課程','老師','校區','有效迄日','啟用','備註','通知模板']);
+  if(fixedHeaderRow<0) throw new Error('來源同步停止：固定課表缺少必要欄位（包含備註、通知模板等）；尚未寫入資料。');
+  const adjustHeaderRow=findHeaderRow(adjustRows,['調課ID','原固定課表ID','原日期','原時間','動作','新日期','新時間','學生','新課程','新老師','新校區','確認','備註']);
+  if(adjustHeaderRow<0) throw new Error('來源同步停止：調課課程缺少必要欄位（包含新課程、新老師、新校區、備註）；尚未寫入資料。');
   const fixedHeaders=(fixedRows[fixedHeaderRow]||[]).map(str);
   const fh=hmap(fixedHeaders);
   const existingFixedIds=new Set();
@@ -1665,6 +1677,15 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
     fixedCorrected:fixedUpdates.length,
     adjustmentsAdded:adjustOutput.length,
     adjustmentsCorrected:adjustmentTimeCorrections.length,
+    redCancelled:parsed.redItems.length,
+    unclassifiedCount:parsed.unclassifiedItems.length,
+    teacherNotesCount:parsed.teacherNotes.length,
+    unclassifiedSamples:parsed.unclassifiedItems.slice(0,5).map(x=>({teacher:x.teacher,weekday:x.weekday,time:x.time,student:x.student,note:x.note})),
+    teacherNotes:parsed.teacherNotes.slice(0,10),
+    warnings:[
+      ...(parsed.unclassifiedItems.length ? ['來源課表有 '+parsed.unclassifiedItems.length+' 筆課程無法自動判讀，未自動匯入；例：'+parsed.unclassifiedItems.slice(0,3).map(x=>[x.teacher,x.weekday,x.time,x.student].filter(Boolean).join(' ')).join('、')] : []),
+      ...(parsed.teacherNotes.length ? ['來源課表有 '+parsed.teacherNotes.length+' 筆老師欄附加備註；程式目前只保留供人工檢查，未自動把備註轉成停課／有效期限規則。例：'+parsed.teacherNotes.slice(0,3).map(x=>x.teacher+'：'+x.note).join('；')] : [])
+    ],
     existingRowsPreserved:true,
     translationEnabled:true
   };
