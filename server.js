@@ -144,6 +144,12 @@ function addMinutesToTime(value,minutesToAdd){
   if(total<0||total>=24*60) return '';
   return String(Math.floor(total/60)).padStart(2,'0')+':'+String(total%60).padStart(2,'0');
 }
+function timeMinutes(value){
+  const t=timeKey(value);
+  if(!t) return -1;
+  const [hh,mm]=t.split(':').map(Number);
+  return hh*60+mm;
+}
 function extractStudentFromTime(v){ const m=str(v).match(/(?:\d{1,2}:?\d{2})\s*[-~～至]\s*(?:\d{1,2}:?\d{2})\s*([^()（）]*)/); return m?str(m[1]):''; }
 function isValidDateKey(value){
   const m=str(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -773,7 +779,9 @@ function buildRows(fixed, adjusts, fromDate, days){
         if(action==='延長時間'){
           const extensionEnd=a.newEndTime||parseTimeRange(a.newTime).end||'';
           if(extensionEnd){
-            out.push({...base,time:fullTime(f.time,extensionEnd),adjustId:'',adjustResult:'已加時30分鐘',
+            const addedMinutes=f.endTime?timeMinutes(extensionEnd)-timeMinutes(f.endTime):0;
+            const adjustResult=addedMinutes>0?'已加時'+addedMinutes+'分鐘':'已調課';
+            out.push({...base,time:fullTime(f.time,extensionEnd),adjustId:'',adjustResult,
               note:a.note||('原時段 '+fullTime(f.time,f.endTime)+'；加時後 '+fullTime(f.time,extensionEnd))});
             handled=true;
             break;
@@ -887,7 +895,7 @@ function buildRows(fixed, adjusts, fromDate, days){
       const suffix=isMulti?'#'+member:'';
       const baseId=x.adjustId?(x.fixedId||'ADJ')+'-'+x.date+'-'+x.adjustId:(x.fixedId||'ADJ')+'-'+x.date;
       const courseId=baseId+suffix;
-      const result=['無','已調課','新增調課','已加時30分鐘'].includes(x.adjustResult)?x.adjustResult:'無';
+      const result=['無','已調課','新增調課'].includes(x.adjustResult)||/^已加時\d+分鐘$/.test(str(x.adjustResult))?x.adjustResult:'無';
       const source=result==='已調課'||result==='新增調課'?'調課':'固定課表';
       const row=[courseId,x.date,weekdayLabel(x.date),fullTime(start,end),member,course,
         x.teacher,normalizeSite(x.site),source,x.fixedId||'',result==='已調課'||result==='新增調課'?(x.adjustId||''):'',
