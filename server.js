@@ -1539,10 +1539,22 @@ function parseRawCourseCell(cell, teacher, weekday, year = new Date().getFullYea
     const durationVariantNote=/各\s*[+＋]?\s*30\s*min(?:ute)?s?/i.test(annotationText);
     const durationAdjustmentMinutes=(durationMatch||durationVariantNote)?30:0;
     if(durationMatch) student=student.replace(/(?:\+|＋)\s*30\s*min(?:ute)?s?/ig,'').trim();
+    let course='';
+    const groupMatch=student.match(/^(.*?團班)\s*[（(]([^（）()]*)[）)]$/);
+    if(groupMatch){
+      course=str(groupMatch[1]);
+      student=split(groupMatch[2]).join('、');
+    }else{
+      const subjectMatch=student.match(/^(.+?)(國文|數學|理化|物理|化學|英文|生物|自然|社會)$/);
+      if(subjectMatch&&subjectMatch[1]&&!/團班/.test(subjectMatch[1])){
+        student=str(subjectMatch[1]);
+        course=str(subjectMatch[2]);
+      }
+    }
     const untilMatch=annotationText.match(/(?:直到|至)\s*(\d{1,2})\/(\d{1,2})/);
     const untilDate=untilMatch?parseDateFlexible(untilMatch[1]+'/'+untilMatch[2],year):'';
     out.push({
-      teacher,weekday,time:start,endTime:end,student,course:'',site:'',
+      teacher,weekday,time:start,endTime:end,student,course,site:'',
       annotations,raw:line,cellText:rawText,colorStatus:colorInfo.status,colorHex:colorInfo.hex,
       colorSource:colorInfo.colorSource,durationAdjustmentMinutes,untilDate,
       note:[colorInfo.status==='yellow'?'[黃色確認中]':'',durationAdjustmentMinutes?'[指定日期加時30分鐘]':'',annotations.some(a=>/可能加半小|可能延長半小時/.test(a))?'[可能延長30分鐘，待確認]':''].filter(Boolean).join('；')
@@ -1774,7 +1786,12 @@ function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
 function rawFixedLogicalKey(x){
   const rawTime=str(x.time);
   const start=parseTimeRange(rawTime).start || timeKey(rawTime);
-  return [norm(x.weekday),start,compact(stripScheduleAnnotation(x.student)),compact(stripScheduleAnnotation(x.teacher))].join('|');
+  let student=stripScheduleAnnotation(x.student);
+  let course=str(x.course);
+  const group=student.match(/^(.*?團班)\s*[（(]([^（）()]*)[）)]$/);
+  if(group){course=course||group[1];student=group[2];}
+  const normalizedStudent=normalizeStudentNameForContact(student);
+  return [norm(x.weekday),start,compact(course),compact(normalizedStudent),compact(stripScheduleAnnotation(x.teacher))].join('|');
 }
 
 function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {}){
