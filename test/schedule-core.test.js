@@ -343,7 +343,7 @@ test('correction-note and fixed-note time moves retain the new end time', () => 
 test('teacher-cell side notes are surfaced for manual review instead of being silently discarded', () => {
   const parsed = parseRawSchedule([
     ['老師', '星期二'],
-    ['陳少禹\\n11月後的課程還要再做確認', { value: '1900-2030彥銘' }]
+    ['陳少禹\n11月後的課程還要再做確認', { value: '1900-2030彥銘' }]
   ], 2026, {}, '2026-10-17');
   assert.deepEqual(parsed.teacherNotes, [{
     teacher: '陳少禹',
