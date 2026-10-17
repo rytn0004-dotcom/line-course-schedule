@@ -605,166 +605,257 @@ function parseReminderRows(rows){
   return {headerRow:hr,headers,rows:out};
 }
 
+function splitClassRoster(value){
+  const text=str(value);
+  const m=text.match(/^(.*?團班)\s*[（(]\s*([^）)]+)\s*[）)]\s*$/);
+  if(!m) return {course:'',students:text};
+  return {course:str(m[1]),students:str(m[2])};
+}
+function fullTime(start, end){
+  const s=timeKey(start)||str(start);
+  const e=timeKey(end)||str(end);
+  return s&&e?s+'-'+e:s;
+}
 function buildRows(fixed, adjusts, fromDate, days){
   const out=[],byKey=new Map(),dateWide=new Map();
-
-  for(const a of adjusts){
-    if(!a.originalDate)continue;
+  const toDate=addDays(fromDate,days-1);
+  const inWindow=d=>!!d&&d>=fromDate&&d<=toDate;
+  const sourcePriority=a=>{
+    const s=str(a.source);
+    if(s.includes('課程校正')) return 4;
+    if(s.includes('調課課程')) return 3;
+    if(s.includes('開學課表')) return 2;
+    if(s.includes('固定課表備註')) return 1;
+    return 0;
+  };
+  const actionPriority=a=>{
     const action=norm(a.action);
+    if(/取消|停課|請假/.test(action)) return 1;
+    if(/改時間|改課|調課|移課/.test(action)) return 2;
+    if(action==='延長時間') return 3;
+    if(action==='延長時間待確認') return 9;
+    return 4;
+  };
+  const orderedAdjusts=[...(adjusts||[])].sort((a,b)=>
+    actionPriority(a)-actionPriority(b)||sourcePriority(b)-sourcePriority(a)||
+    String(a.id||'').localeCompare(String(b.id||'')));
+  const conflictGroups=new Map();
+  for(const a of orderedAdjusts){
+    if(!a.originalDate||!a.originalTime||!a.student) continue;
+    const key=[a.originalDate,compact(a.student),timeKey(a.originalTime)].join('|');
+    if(!conflictGroups.has(key)) conflictGroups.set(key,[]);
+    conflictGroups.get(key).push(a);
+  }
+  for(const [key,group] of conflictGroups){
+    if(group.length<2) continue;
+    const signatures=new Set(group.map(a=>[norm(a.action),a.newDate||'',a.newTime||'',a.newEndTime||''].join('|')));
+    if(signatures.size>1){
+      console.warn('[SCHEDULE-ADJUST-CONFLICT] 同一課程有多筆不同校正，依優先順序採用第一筆', {
+        key,selected:group[0].id||'(no id)',ignored:group.slice(1).map(x=>x.id||'(no id)')
+      });
+    }
+  }
 
-    // 「整日停課」：只要日期符合，就取消當天全部固定課程。
-    if(/整日.*(?:停課|取消)/.test(action)){
-      if(!dateWide.has(a.originalDate))dateWide.set(a.originalDate,{cancel:true,moves:[]});
+  for(const a of orderedAdjusts){
+    if(!a.originalDate) continue;
+    const action=norm(a.action);
+    const isWholeDay=/整日/.test(action)&&!str(a.student);
+    if(isWholeDay && /(?:停課|取消)/.test(action)){
+      if(!dateWide.has(a.originalDate)) dateWide.set(a.originalDate,{cancel:true,moves:[]});
       dateWide.get(a.originalDate).cancel=true;
       continue;
     }
-
-    // 「整日調課到10/9」：將來源日期的全部固定課程搬到指定日期。
-    if(/整日.*(?:調課|移課|改課)/.test(action)){
-      // 整日調課的目的日期以「校正動作」為最高優先來源。
-      // 例如：2026-10-10 +「整日調課到10/9」=> 2026-10-09。
-      const nd=extractMoveDate(a.action,a.originalDate) || a.newDate;
+    if(isWholeDay && /(?:調課|移課|改課)/.test(action)){
+      const nd=extractMoveDate(a.action,a.originalDate,a.originalDate)||a.newDate;
       if(nd && nd!==a.originalDate){
-        if(!dateWide.has(a.originalDate))dateWide.set(a.originalDate,{cancel:false,moves:[]});
+        if(!dateWide.has(a.originalDate)) dateWide.set(a.originalDate,{cancel:false,moves:[]});
         dateWide.get(a.originalDate).moves.push({...a,newDate:nd});
-      }else if(nd===a.originalDate){
-        console.warn('Ignored invalid same-date whole-day move:',a.originalDate,a.action,a.note||'');
+      }else{
+        console.warn('[SCHEDULE-WHOLE-DAY-MOVE] 無效目的日期，保留原固定課程',a.id||'',a.originalDate,a.action);
       }
       continue;
     }
-
-    const k=a.originalDate+'|'+compact(a.student)+'|'+a.originalTime;
-    if(!byKey.has(k))byKey.set(k,[]);
-    byKey.get(k).push(a);
+    const key=a.originalDate+'|'+compact(a.student)+'|'+(timeKey(a.originalTime)||a.originalTime);
+    if(!byKey.has(key)) byKey.set(key,[]);
+    byKey.get(key).push(a);
   }
-
-  const toDate=addDays(fromDate,days-1);
 
   for(let d=fromDate;d<=toDate;d=addDays(d,1)){
     const wd=weekdayLabel(d);
     for(const f of fixed){
-      if(!str(f.student) || isUnavailableSlot(f.student)) continue;
-      if(f.until&&/^\d{4}-\d{2}-\d{2}$/.test(f.until)&&d>f.until)continue;
-      if(norm(f.weekday)!==norm(wd))continue;
-
-      const base={date:d,weekday:wd,time:f.time,student:f.student,course:f.course,teacher:f.teacher,site:f.site,source:'固定課表',fixedId:f.id,adjustId:'',adjustResult:'無',note:f.note||'',template:f.template||''};
+      if(!str(f.student)||isUnavailableSlot(f.student)) continue;
+      if(f.until&&isValidDateKey(f.until)&&d>f.until) continue;
+      if(norm(f.weekday)!==norm(wd)) continue;
+      const base={
+        date:d,weekday:wd,time:fullTime(f.time,f.endTime),student:f.student,course:f.course,
+        teacher:f.teacher,site:f.site,source:'固定課表',fixedId:f.id,adjustId:'',
+        adjustResult:'無',note:f.note||'',template:f.template||''
+      };
       const wide=dateWide.get(d);
-      const k=d+'|'+compact(f.student)+'|'+f.time;
+      const k=d+'|'+compact(f.student)+'|'+timeKey(f.time);
       const adj=byKey.get(k)||[];
       let handled=false;
 
-      // 個別校正優先於整日規則。
-      // 例如：10/10 整日調課到 10/9，但小明另填「10/10 小明 12:00 調到 10/11」，
-      // 小明就不走 10/9 的整日搬課，而是直接使用個別校正結果。
-      if(adj.length){
-        for(const a of adj){
-          const action=norm(a.action);
-          if(action==='延長時間待確認') continue;
-          if(action==='延長時間'){
-            const extensionEnd=a.newEndTime||parseTimeRange(a.newTime).end||'';
-            if(extensionEnd){
-              out.push({
-                ...base,time:f.time+'-'+extensionEnd,
-                source:a.source||'開學課表',adjustId:a.id||f.id+'-'+d,
-                adjustResult:'已加時30分鐘',note:a.note||('原定時段 '+f.time+'-'+f.endTime+'；加時後 '+f.time+'-'+extensionEnd)
-              });
-              handled=true;
-              break;
-            }
-            continue;
-          }
-          if(action==='取消'||action==='停課'||/請假/.test(action)){
-            out.push({...base,source:a.source||'調課課程',adjustId:a.id||f.id+'-'+d,adjustResult:'取消',note:a.note||'取消'});
+      for(const a of adj){
+        const action=norm(a.action);
+        if(action==='延長時間待確認') continue;
+        if(/取消|停課|請假/.test(action)){
+          handled=true;
+          break;
+        }
+        if(action==='延長時間'){
+          const extensionEnd=a.newEndTime||parseTimeRange(a.newTime).end||'';
+          if(extensionEnd){
+            out.push({...base,time:fullTime(f.time,extensionEnd),adjustId:'',adjustResult:'已加時30分鐘',
+              note:a.note||('原時段 '+fullTime(f.time,f.endTime)+'；加時後 '+fullTime(f.time,extensionEnd))});
             handled=true;
             break;
           }
-          if(/改時間|改課|調課|移課/.test(action)){
-            const nd=a.newDate||d,nt=a.newTime||f.time;
-            out.push({
-              ...base,date:nd,weekday:weekdayLabel(nd),time:nt,
-              student:a.student||f.student,course:a.course||f.course,teacher:a.teacher||f.teacher,
-              site:a.site||f.site,source:a.source||'調課課程',fixedId:f.id,
-              adjustId:a.id||f.id+'-'+d,adjustResult:'已調課',note:a.note||''
-            });
-            handled=true;
-            break;
+          continue;
+        }
+        if(/改時間|改課|調課|移課/.test(action)){
+          const nd=a.newDate||d;
+          if(inWindow(nd)){
+            const start=a.newTime||f.time;
+            const end=a.newEndTime||parseTimeRange(a.newTime).end||f.endTime;
+            out.push({...base,date:nd,weekday:weekdayLabel(nd),time:fullTime(start,end),
+              student:f.student,course:f.course,teacher:f.teacher,site:f.site,source:'調課',
+              fixedId:f.id,adjustId:a.id||'MOVE-'+d+'-'+nd,adjustResult:'已調課',note:a.note||''});
           }
+          handled=true;
+          break;
         }
       }
 
-      // 沒有個別例外時，才套用整日規則。
-      if(!handled && wide?.cancel){
-        out.push({...base,source:'課程校正',adjustId:'DATE-CANCEL-'+d,adjustResult:'取消',note:'整日停課'});
-        handled=true;
-      }
-
-      if(!handled && wide?.moves?.length){
-        for(const a of wide.moves){
-          const nd=a.newDate;
-          if(!nd || nd===d || nd<fromDate||nd>toDate)continue;
-          out.push({
-            ...base,date:nd,weekday:weekdayLabel(nd),time:a.newTime||f.time,
-            student:a.student||f.student,course:a.course||f.course,teacher:a.teacher||f.teacher,
-            site:a.site||f.site,source:a.source||'課程校正',fixedId:f.id,
-            adjustId:a.id||'DATE-MOVE-'+d+'-'+nd,adjustResult:'已調課',
-            note:a.note||('整日調課：'+d+' → '+nd)
-          });
+      if(!handled&&wide?.cancel) handled=true;
+      if(!handled&&wide?.moves?.length){
+        const validMoves=wide.moves.filter(a=>a.newDate&&a.newDate!==d);
+        if(validMoves.length){
+          for(const a of validMoves){
+            const nd=a.newDate;
+            if(!inWindow(nd)) continue;
+            out.push({...base,date:nd,weekday:weekdayLabel(nd),
+              time:fullTime(a.newTime||f.time,a.newEndTime||parseTimeRange(a.newTime).end||f.endTime),
+              student:f.student,course:f.course,teacher:f.teacher,site:f.site,source:'調課',
+              fixedId:f.id,adjustId:a.id||'DATE-MOVE-'+d+'-'+nd,adjustResult:'已調課',
+              note:a.note||('整日調課：'+d+' → '+nd)});
+          }
+          handled=true;
         }
-        handled=true;
       }
-
-      if(!handled)out.push(base);
+      if(!handled) out.push(base);
     }
   }
 
-  // 「新增／補課／體驗」仍沿用原本的新增課程機制。
-  for(const a of adjusts){
-    if(!a.newDate||a.originalDate||/取消|停課/.test(a.action))continue;
-    if(a.newDate<fromDate||a.newDate>toDate)continue;
-    const fb=fixed.find(x=>x.id===a.fixedId),isAdd=/新增|補課|體驗|代課/.test(a.action)||!a.fixedId;
-    if(!isAdd||!a.newTime)continue;
-    const student=a.student||fb?.student||''; if(!student)continue;
-    out.push({date:a.newDate,weekday:weekdayLabel(a.newDate),time:a.newTime,student,course:a.course||fb?.course||'',teacher:a.teacher||fb?.teacher||'',site:a.site||fb?.site||'',source:a.source||'調課課程',fixedId:fb?.id||'',adjustId:a.id||'NEW-'+a.newDate+'-'+compact(student),adjustResult:'新增調課',note:a.note||'',template:fb?.template||''});
+  for(const a of orderedAdjusts){
+    if(!a.originalDate||inWindow(a.originalDate)||!inWindow(a.newDate)) continue;
+    const action=norm(a.action);
+    if(!/改時間|改課|調課|移課/.test(action)||/整日/.test(action)) continue;
+    if(/取消|停課|請假/.test(action)) continue;
+    const members=normalizeMemberList(splitClassRoster(a.student).students);
+    const f=fixed.find(x=>(a.fixedId&&x.id===a.fixedId)||
+      (norm(x.weekday)===norm(weekdayLabel(a.originalDate))&&
+       timeKey(x.time)===timeKey(a.originalTime)&&
+       (compact(x.student)===compact(a.student)||members.includes(str(x.student)))));
+    if(!f||!str(f.student)||isUnavailableSlot(f.student)) continue;
+    const start=a.newTime||f.time;
+    const end=a.newEndTime||parseTimeRange(a.newTime).end||f.endTime;
+    out.push({date:a.newDate,weekday:weekdayLabel(a.newDate),time:fullTime(start,end),
+      student:f.student,course:f.course,teacher:f.teacher,site:f.site,source:'調課',
+      fixedId:f.id,adjustId:a.id||'MOVE-'+a.originalDate+'-'+a.newDate,adjustResult:'已調課',
+      note:a.note||('由 '+a.originalDate+' 調至 '+a.newDate),template:f.template||''});
+  }
+
+  for(const a of orderedAdjusts){
+    const action=norm(a.action);
+    if(!/新增|補課|體驗|代課|加課/.test(action)||/取消|停課/.test(action)) continue;
+    const addDate=a.newDate||a.originalDate;
+    if(!inWindow(addDate)) continue;
+    const fb=fixed.find(x=>x.id===a.fixedId);
+    const start=a.newTime||a.originalTime||'';
+    const end=a.newEndTime||parseTimeRange(a.newTime).end||fb?.endTime||'';
+    if(!timeKey(start)) continue;
+    const student=a.student||fb?.student||'';
+    if(!student||isUnavailableSlot(student)) continue;
+    if(!end) console.warn('[SCHEDULE-ADD-MISSING-END] 新增課程缺少下課時間，請檢查調課課程／課程校正列',a.id||'',student,addDate);
+    out.push({date:addDate,weekday:weekdayLabel(addDate),time:fullTime(start,end),student,
+      course:a.course||fb?.course||'',teacher:a.teacher||fb?.teacher||'',site:a.site||fb?.site||'',
+      source:'調課',fixedId:fb?.id||'',adjustId:a.id||'NEW-'+addDate+'-'+compact(student),
+      adjustResult:'新增調課',note:a.note||'單次加課',template:fb?.template||''});
   }
 
   const seen=new Set(),final=[];
   for(const x of out.sort((a,b)=>a.date.localeCompare(b.date)||a.time.localeCompare(b.time)||a.student.localeCompare(b.student))){
-    const key=[x.date,x.time,x.student,x.course,x.teacher,x.site,x.fixedId,x.adjustId,x.adjustResult].join('|');
-    if(seen.has(key))continue;
-    seen.add(key);
-    const courseId=x.adjustId?(x.fixedId||'ADJ')+'-'+x.date+'-'+x.adjustId:x.fixedId+'-'+x.date;
-    final.push([courseId,x.date,x.weekday,x.time,x.student,x.course,x.teacher,normalizeSite(x.site),x.source,x.fixedId,x.adjustId,x.adjustResult,x.note||'']);
+    const roster=splitClassRoster(x.student);
+    const course=x.course||roster.course;
+    const members=normalizeMemberList(roster.course?roster.students:x.student);
+    if(!members.length) continue;
+    const range=parseTimeRange(x.time);
+    const start=range.start||timeKey(x.time);
+    const end=range.end||'';
+    const isMulti=members.length>1;
+    for(const member of members){
+      const suffix=isMulti?'#'+member:'';
+      const baseId=x.adjustId?(x.fixedId||'ADJ')+'-'+x.date+'-'+x.adjustId:(x.fixedId||'ADJ')+'-'+x.date;
+      const courseId=baseId+suffix;
+      const result=['無','已調課','新增調課','已加時30分鐘'].includes(x.adjustResult)?x.adjustResult:'無';
+      const source=result==='已調課'||result==='新增調課'?'調課':'固定課表';
+      const row=[courseId,x.date,weekdayLabel(x.date),fullTime(start,end),member,course,
+        x.teacher,normalizeSite(x.site),source,x.fixedId||'',result==='已調課'||result==='新增調課'?(x.adjustId||''):'',
+        result,x.note||'',start,end];
+      const key=[row[0],row[1],row[3],row[4],row[5],row[6]].join('|');
+      if(seen.has(key)) continue;
+      seen.add(key);
+      final.push(row);
+    }
   }
   return final;
 }
-async function writeActual(rows, previousRows=[]){
-  let lastExistingDataRow=0;
-  for(let i=2;i<(previousRows||[]).length;i++){
-    const row=previousRows[i]||[];
-    if(row.some(value=>str(value)!=='')) lastExistingDataRow=i+1;
+
+function mergeActualRows(rows, previousRows, fromDate, toDate){
+  const previous=(previousRows||[]).slice(2).filter(row=>Array.isArray(row)&&row.some(value=>str(value)!==''));
+  const inWindow=row=>{
+    const date=dateKey(row?.[1]);
+    return isValidDateKey(date)&&date>=fromDate&&date<=toDate;
+  };
+  const priorInWindow=previous.filter(inWindow);
+  if(rows.length===0&&priorInWindow.length>0){
+    throw new Error('安全保護：本次區間的實際課程結果為 0 筆，但區間內仍有 '+priorInWindow.length+' 筆舊課程；已拒絕清空資料，請先檢查來源解析及日期範圍。');
   }
-  const previousDataCount=Math.max(0,lastExistingDataRow-2);
-  if(rows.length===0 && previousDataCount>0){
-    throw new Error('安全保護：本次實際課程結果為 0 筆，但工作表仍有 '+previousDataCount+' 筆舊課程；已拒絕清空資料，請先檢查來源解析及日期範圍。');
-  }
-  // 先寫入新資料；只有成功後才清除超出新範圍的舊尾列，避免先清空再遇到寫入失敗。
-  if(rows.length){
+  const normalizeRow=row=>{
+    const out=(row||[]).slice(0,15);
+    while(out.length<15) out.push('');
+    const range=parseTimeRange(out[3]);
+    if(!str(out[13])) out[13]=range.start||timeKey(out[3]);
+    if(!str(out[14])) out[14]=range.end||'';
+    return out;
+  };
+  const preserved=previous.filter(row=>!inWindow(row)).map(normalizeRow);
+  const replacements=(rows||[]).map(normalizeRow);
+  const merged=[...preserved,...replacements];
+  merged.sort((a,b)=>dateKey(a[1]).localeCompare(dateKey(b[1]))||str(a[3]).localeCompare(str(b[3]))||str(a[4]).localeCompare(str(b[4])));
+  return {merged,previousDataCount:previous.length};
+}
+async function writeActual(rows, previousRows=[], fromDate=todayKey(), toDate=fromDate){
+  const {merged,previousDataCount}=mergeActualRows(rows,previousRows,fromDate,toDate);
+  const lastExistingDataRow=Math.max(2,(previousRows||[]).length);
+  if(merged.length){
     await retry('write 實際課程',()=>sheets.spreadsheets.values.update({
       spreadsheetId:SHEET_ID,
-      range:`${qsheet('實際課程')}!A3:M${rows.length+2}`,
-      valueInputOption:'RAW',requestBody:{values:rows}
+      range:qsheet('實際課程')+'!A3:O'+(merged.length+2),
+      valueInputOption:'RAW',requestBody:{values:merged}
     }));
   }
-  const newLastRow=rows.length+2;
+  const newLastRow=merged.length+2;
   if(lastExistingDataRow>newLastRow){
     await retry('clear stale tail 實際課程',()=>sheets.spreadsheets.values.clear({
       spreadsheetId:SHEET_ID,
-      range:`${qsheet('實際課程')}!A${newLastRow+1}:M${lastExistingDataRow}`,
+      range:qsheet('實際課程')+'!A'+(newLastRow+1)+':O'+lastExistingDataRow,
       requestBody:{}
     }));
   }
+  return {previousDataCount,preservedOutsideWindow:Math.max(0,merged.length-rows.length),written:merged.length};
 }
-
 function actualObjects(actualRows){
   return actualRows.map(r=>{
     const range=parseTimeRange(r[3]);
