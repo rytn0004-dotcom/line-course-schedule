@@ -6,6 +6,7 @@ const {
   addMinutesToTime,
   normalizeTimeRange,
   hasDateScopedTargetOverride,
+  mergeExplicitMoveDestinationOverrides,
   extractReminderStudentNames,
   parseDurationTargetDates,
   parseCourseStartDateNote,
@@ -55,6 +56,65 @@ test('preserves start and end in course time ranges', () => {
 test('calculates extension end times safely', () => {
   assert.equal(addMinutesToTime('12:30', 30), '13:00');
   assert.equal(addMinutesToTime('23:45', 30), '');
+});
+
+test('uses the explicit destination-cell time when it differs from the source move time', () => {
+  const sourceMove = {
+    id: 'ADJ-SOURCE',
+    fixedId: 'FS010',
+    originalDate: '2026-10-15',
+    originalTime: '18:00',
+    action: '調課',
+    newDate: '2026-10-12',
+    newTime: '18:00-19:30',
+    student: '怡希',
+    course: '',
+    teacher: '曾嘉盈',
+    site: '',
+    note: '來源：開學課表；10/15調10/12b',
+    source: '開學課表'
+  };
+  const destination = {
+    id: 'ADJ-TARGET',
+    fixedId: '',
+    originalDate: '2026-10-15',
+    originalTime: '17:30',
+    action: '調課',
+    newDate: '2026-10-12',
+    newTime: '17:30-19:00',
+    student: '怡希',
+    course: '',
+    teacher: '曾嘉盈',
+    site: '',
+    note: '[單次課程] 目的日課程；10/15調10/12b',
+    source: '開學課表'
+  };
+
+  const merged = mergeExplicitMoveDestinationOverrides([sourceMove, destination]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].originalDate, '2026-10-15');
+  assert.equal(merged[0].originalTime, '18:00');
+  assert.equal(merged[0].newDate, '2026-10-12');
+  assert.equal(merged[0].newTime, '17:30-19:00');
+  assert.equal(merged[0].student, '怡希');
+  assert.equal(merged[0].action, '調課');
+  assert.match(merged[0].note, /原始調課/);
+});
+
+test('does not merge ambiguous move destinations', () => {
+  const move = {
+    originalDate: '2026-10-15', originalTime: '18:00', action: '調課',
+    newDate: '2026-10-12', newTime: '18:00-19:30',
+    student: '怡希', teacher: '曾嘉盈', site: '', note: '來源：開學課表'
+  };
+  const duplicateMove = { ...move, originalDate: '2026-10-08', originalTime: '18:30' };
+  const destination = {
+    originalDate: '', originalTime: '', action: '補課',
+    newDate: '2026-10-12', newTime: '17:30-19:00',
+    student: '怡希', teacher: '曾嘉盈', site: '', note: '[單次課程] 10/12；原始時段 17:30-19:00'
+  };
+  const result = mergeExplicitMoveDestinationOverrides([move, duplicateMove, destination]);
+  assert.equal(result.length, 3);
 });
 
 test('suppresses weekly slot when an explicit move target replaces it on the same start time', () => {
