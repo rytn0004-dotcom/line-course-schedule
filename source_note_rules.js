@@ -80,8 +80,8 @@ function timeKey(value) {
 }
 
 function normalizeTimeRange(value) {
-  const source = String(value ?? '').trim().replace(/\\s+/g, '');
-  const m = source.match(/^(\\d{1,2}:?\\d{2})[-~～至](\\d{1,2}:?\\d{2})$/);
+  const source = String(value ?? '').trim().replace(/\s+/g, '');
+  const m = source.match(/^(\d{1,2}:?\d{2})[-~～至](\d{1,2}:?\d{2})$/);
   if (!m) return timeKey(value);
   const start = timeKey(m[1]), end = timeKey(m[2]);
   if (!start) return '';
