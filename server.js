@@ -6,6 +6,7 @@ const {
   normalizeTimeRange,
   hasDateScopedTargetOverride,
   mergeExplicitMoveDestinationOverrides,
+  isSourceImportedFixedNote,
   extractReminderStudentNames,
   parseDurationTargetDates,
   parseSameDayTimeChangeNote,
@@ -506,7 +507,7 @@ function parseInlineAdjustments(fixed){
   for(const f of fixed){
     // Source workbook annotations are parsed into 調課課程 during source synchronization.
     // Do not parse their copied audit note a second time as a separate manual adjustment.
-    if(str(f.note).includes('來源：開學課表自動同步')) continue;
+    if(isSourceImportedFixedNote(f.note)) continue;
     const raw=str(f.rawTime);
     const note=str(f.note);
     const text=raw+' '+note;
