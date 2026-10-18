@@ -8,6 +8,7 @@ const {
   parseSameDayTimeChangeNote,
   normalizeStudentNameForContact,
   parseSingleDateOnlyNote,
+  parseTeacherAbsenceNote,
   parseTeacherConfirmUntil,
   sourceTeacherCourseOverride,
   splitWrappedCourseLines
@@ -1685,8 +1686,15 @@ function parseRawCourseCell(cell, teacher, weekday, year = new Date().getFullYea
     const start=timeKey(tm[1]), end=timeKey(tm[2]);
     let rest=str(tm[3]);
     if(!start || !end || !rest) continue;
-    const colorCharOffset=line.indexOf(tm[3]);
-    const colorInfo=classifyRawFontColor(cell,lineStart+Math.max(0,colorCharOffset),themeColors);
+    // The sheet legend marks yellow text as "確認中". Some lessons color only
+    // the time range yellow while leaving the student name dark; inspect both.
+    const timeColorInfo=classifyRawFontColor(cell,lineStart+Math.max(0,line.indexOf(tm[1])),themeColors);
+    const contentColorInfo=classifyRawFontColor(cell,lineStart+Math.max(0,line.indexOf(tm[3])),themeColors);
+    const colorInfo =
+      [timeColorInfo,contentColorInfo].find(x=>x.status==='red') ||
+      [timeColorInfo,contentColorInfo].find(x=>x.status==='yellow') ||
+      [contentColorInfo,timeColorInfo].find(x=>x.status==='purple') ||
+      contentColorInfo;
     const annotations=[];
     if(isUnavailableSlot(rest)) continue;
     rest=rest.replace(/[（(]([^）)]*)[）)]/g,(whole,x,offset)=>{
@@ -1727,7 +1735,9 @@ function parseRawCourseCell(cell, teacher, weekday, year = new Date().getFullYea
     out.push({
       teacher,weekday,time:start,endTime:end,student,course,site:'',
       annotations,raw:line,cellText:rawText,colorStatus:colorInfo.status,colorHex:colorInfo.hex,
-      colorSource:colorInfo.colorSource,durationAdjustmentMinutes,untilDate,
+      colorSource:colorInfo.colorSource,timeColorStatus:timeColorInfo.status,timeColorHex:timeColorInfo.hex,
+      contentColorStatus:contentColorInfo.status,contentColorHex:contentColorInfo.hex,
+      durationAdjustmentMinutes,untilDate,
       note:[colorInfo.status==='yellow'?'[黃色確認中]':'',durationAdjustmentMinutes?'[指定日期加時30分鐘]':'',annotations.some(a=>/可能加半小|可能延長半小時|問要不要加\d+分/.test(a))?'[加時尚待確認]':'',annotations.length?'來源註記：'+annotationText:''].filter(Boolean).join('；')
     });
   }
@@ -1936,6 +1946,19 @@ function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
           note:rawText+(duration?'（調課後時段 '+movedRange+'）':'')
         });
       }
+      continue;
+    }
+
+    // A plain "師p" marks teacher leave for this date. A "師p調..." move above
+    // is already handled as a move and must not become a second cancellation.
+    const teacherAbsenceDate=parseTeacherAbsenceNote(rawText,year);
+    if(teacherAbsenceDate){
+      add({
+        originalDate:teacherAbsenceDate,originalTime:item.time,action:'停課',
+        newDate:teacherAbsenceDate,newTime:fullRange,
+        teacher:targetTeacher,course:targetCourse,
+        note:'老師請假標記：'+rawText+'；本日不排課'
+      });
       continue;
     }
 
