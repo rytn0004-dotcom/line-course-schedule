@@ -74,6 +74,7 @@ test('attaches standalone adjustment lines to the preceding course', () => {
 test('recognizes teacher leave but not teacher-leave moves as cancellations', () => {
   assert.equal(parseTeacherAbsenceNote('10/17師p', 2026), '2026-10-17');
   assert.equal(parseTeacherAbsenceNote('10/5師p', 2026), '2026-10-05');
+  assert.equal(parseTeacherAbsenceNote('(9/26老\\n師p)', 2026), '2026-09-26');
   assert.equal(parseTeacherAbsenceNote('10/5師p調10/14b', 2026), '');
 });
 
