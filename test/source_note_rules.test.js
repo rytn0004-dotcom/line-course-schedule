@@ -67,9 +67,9 @@ test('uses the explicit destination-cell time when it differs from the source mo
     action: '調課',
     newDate: '2026-10-12',
     newTime: '18:00-19:30',
-    student: '怡希',
+    student: '測試學生A',
     course: '',
-    teacher: '曾嘉盈',
+    teacher: '測試老師A',
     site: '',
     note: '來源：開學課表；10/15調10/12b',
     source: '開學課表'
@@ -82,9 +82,9 @@ test('uses the explicit destination-cell time when it differs from the source mo
     action: '調課',
     newDate: '2026-10-12',
     newTime: '17:30-19:00',
-    student: '怡希',
+    student: '測試學生A',
     course: '',
-    teacher: '曾嘉盈',
+    teacher: '測試老師A',
     site: '',
     note: '[單次課程] 目的日課程；10/15調10/12b',
     source: '開學課表'
@@ -96,7 +96,7 @@ test('uses the explicit destination-cell time when it differs from the source mo
   assert.equal(merged[0].originalTime, '18:00');
   assert.equal(merged[0].newDate, '2026-10-12');
   assert.equal(merged[0].newTime, '17:30-19:00');
-  assert.equal(merged[0].student, '怡希');
+  assert.equal(merged[0].student, '測試學生A');
   assert.equal(merged[0].action, '調課');
   assert.match(merged[0].note, /原始調課/);
 });
@@ -104,15 +104,15 @@ test('uses the explicit destination-cell time when it differs from the source mo
 test('uses the longer date-specific slot from the uploaded timetable for each listed target date', () => {
   const sourceMoves = ['2026-10-08', '2026-10-15', '2026-10-22'].map((newDate, index) => ({
     id: 'ADJ-SOURCE-' + index,
-    fixedId: 'FS-怡涵',
+    fixedId: 'FS-測試學生B',
     originalDate: '2026-10-01',
     originalTime: '18:00',
     action: '調課',
     newDate,
     newTime: '18:00-19:30',
-    student: '怡涵',
+    student: '測試學生B',
     course: '',
-    teacher: '鄭雅方',
+    teacher: '測試老師B',
     site: '',
     note: '來源：開學課表；10/1p調10/8b、10/15b、10/22b',
     source: '開學課表'
@@ -125,9 +125,9 @@ test('uses the longer date-specific slot from the uploaded timetable for each li
     action: '補課',
     newDate,
     newTime: '18:00-20:00',
-    student: '怡涵',
+    student: '測試學生B',
     course: '',
-    teacher: '鄭雅方',
+    teacher: '測試老師B',
     site: '',
     note: '[單次課程] 10/8、10/15、10/22；原始時段 18:00-20:00',
     source: '開學課表'
@@ -139,7 +139,7 @@ test('uses the longer date-specific slot from the uploaded timetable for each li
     assert.equal(item.originalDate, '2026-10-01');
     assert.equal(item.action, '調課');
     assert.equal(item.newTime, '18:00-20:00');
-    assert.equal(item.student, '怡涵');
+    assert.equal(item.student, '測試學生B');
     assert.match(item.note, /原始調課/);
   }
   assert.deepEqual(merged.map(item => item.newDate).sort(), ['2026-10-08', '2026-10-15', '2026-10-22']);
@@ -149,13 +149,13 @@ test('does not merge ambiguous move destinations', () => {
   const move = {
     originalDate: '2026-10-15', originalTime: '18:00', action: '調課',
     newDate: '2026-10-12', newTime: '18:00-19:30',
-    student: '怡希', teacher: '曾嘉盈', site: '', note: '來源：開學課表'
+    student: '測試學生A', teacher: '測試老師A', site: '', note: '來源：開學課表'
   };
   const duplicateMove = { ...move, originalDate: '2026-10-08', originalTime: '18:30' };
   const destination = {
     originalDate: '', originalTime: '', action: '補課',
     newDate: '2026-10-12', newTime: '17:30-19:00',
-    student: '怡希', teacher: '曾嘉盈', site: '', note: '[單次課程] 10/12；原始時段 17:30-19:00'
+    student: '測試學生A', teacher: '測試老師A', site: '', note: '[單次課程] 10/12；原始時段 17:30-19:00'
   };
   const result = mergeExplicitMoveDestinationOverrides([move, duplicateMove, destination]);
   assert.equal(result.length, 3);
@@ -166,22 +166,22 @@ test('suppresses weekly slot when an explicit move target replaces it on the sam
     originalDate: '2026-10-01',
     newDate: '2026-10-22',
     action: '調課',
-    student: '怡涵',
+    student: '測試學生B',
     newTime: '18:00-20:00',
     note: '[單次課程] 目的日課程；原始調課：10/1p調10/8b、10/15b、10/22b'
   }];
-  assert.equal(hasDateScopedTargetOverride(adjustments, '2026-10-22', '怡涵', '18:00'), true);
-  assert.equal(hasDateScopedTargetOverride(adjustments, '2026-10-23', '怡涵', '18:00'), false);
+  assert.equal(hasDateScopedTargetOverride(adjustments, '2026-10-22', '測試學生B', '18:00'), true);
+  assert.equal(hasDateScopedTargetOverride(adjustments, '2026-10-23', '測試學生B', '18:00'), false);
   assert.equal(hasDateScopedTargetOverride(adjustments, '2026-10-22', '另一位學生', '18:00'), false);
-  assert.equal(hasDateScopedTargetOverride(adjustments, '2026-10-22', '怡涵', '19:00'), false);
+  assert.equal(hasDateScopedTargetOverride(adjustments, '2026-10-22', '測試學生B', '19:00'), false);
   assert.equal(hasDateScopedTargetOverride([{
     originalDate: '',
     newDate: '2026-10-22',
     action: '補課',
-    student: '怡涵',
+    student: '測試學生B',
     newTime: '18:00-20:00',
     note: '[單次課程] 單次額外課程'
-  }], '2026-10-22', '怡涵', '18:00'), false);
+  }], '2026-10-22', '測試學生B', '18:00'), false);
 });
 
 test('extracts group members without confusing the group label or date note for a student', () => {
