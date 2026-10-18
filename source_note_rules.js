@@ -192,10 +192,15 @@ function hasDateScopedTargetOverride(adjustments, date, student, time) {
   const targetRange = normalizeTimeRange(time);
   const targetStart = targetRange ? targetRange.split('-')[0] : '';
   if (!targetDate || !targetStudent || !targetStart) return false;
+
   return (Array.isArray(adjustments) ? adjustments : []).some(item => {
     if (String(item?.newDate ?? '').trim() !== targetDate) return false;
+    const sourceDate = String(item?.originalDate ?? '').trim();
+    if (!sourceDate || sourceDate === targetDate) return false;
+    if (!/調課|移課|改課|代課/.test(String(item?.action ?? ''))) return false;
     if (normalizeStudentNameForContact(item?.student) !== targetStudent) return false;
-    if (!/\\[單次課程\\]|\\[單次／紫色調課\\]|\\[紫色調課\\]/.test(String(item?.note ?? ''))) return false;
+    if (!/\[單次課程\]|\[單次／紫色調課\]|\[紫色調課\]/.test(String(item?.note ?? ''))) return false;
+
     const range = normalizeTimeRange(item?.newTime);
     const start = range ? range.split('-')[0] : '';
     return start === targetStart;
