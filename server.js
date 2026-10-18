@@ -1724,6 +1724,7 @@ function parseRawCourseCell(cell, teacher, weekday, year = new Date().getFullYea
     let student=rest.replace(/\s+/g,' ').trim();
     if(!student || isUnavailableSlot(student)) continue;
     const annotationText=annotations.join('；');
+    const startsOn=parseCourseStartDateNote(annotationText,year);
     const durationMatch=student.match(/(?:\+|＋)\s*30\s*min(?:ute)?s?/i);
     const durationVariantNote=/各\s*[+＋]?\s*30\s*min(?:ute)?s?/i.test(annotationText);
     const durationAdjustmentMinutes=(durationMatch||durationVariantNote)?30:0;
@@ -1747,8 +1748,8 @@ function parseRawCourseCell(cell, teacher, weekday, year = new Date().getFullYea
       annotations,raw:line,cellText:rawText,colorStatus:colorInfo.status,colorHex:colorInfo.hex,
       colorSource:colorInfo.colorSource,timeColorStatus:timeColorInfo.status,timeColorHex:timeColorInfo.hex,
       contentColorStatus:contentColorInfo.status,contentColorHex:contentColorInfo.hex,
-      durationAdjustmentMinutes,untilDate,
-      note:[colorInfo.status==='yellow'?'[黃色確認中]':'',durationAdjustmentMinutes?'[指定日期加時30分鐘]':'',annotations.some(a=>/可能加半小|可能延長半小時|問要不要加\d+分/.test(a))?'[加時尚待確認]':'',annotations.length?'來源註記：'+annotationText:''].filter(Boolean).join('；')
+      durationAdjustmentMinutes,untilDate,startsOn,
+      note:[startsOn?'[有效起日：'+startsOn+']':'',colorInfo.status==='yellow'?'[黃色確認中]':'',durationAdjustmentMinutes?'[指定日期加時30分鐘]':'',annotations.some(a=>/可能加半小|可能延長半小時|問要不要加\d+分/.test(a))?'[加時尚待確認]':'',annotations.length?'來源註記：'+annotationText:''].filter(Boolean).join('；')
     });
   }
   return out;
