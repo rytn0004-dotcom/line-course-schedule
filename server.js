@@ -1768,7 +1768,11 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
 
 function unavailableSlotWarnings(actualRows, unavailableSlots){
   const rows=actualRows||[], slots=unavailableSlots||[];
-  if(!slots.length||!rows.length) return [];
+  if(!slots.length) return [];
+  const unspecified=slots.filter(x=>x.allDayOrUnspecified);
+  if(!rows.length){
+    return unspecified.length?['來源課表有 '+unspecified.length+' 筆未指定時段的「無法排課」備註，請人工確認日期與時段；程式不會自行推定為整日停課。例：'+unspecified.slice(0,5).map(x=>x.teacher+'／星期'+x.weekday+'：'+x.note).join('；')]:[];
+  }
   const minutes=value=>{
     const t=timeKey(value);
     if(!t) return -1;
@@ -1795,7 +1799,9 @@ function unavailableSlotWarnings(actualRows, unavailableSlots){
       }
     }
   }
-  if(!matches.size) return [];
+  if(!matches.size){
+    return unspecified.length?['來源課表另有 '+unspecified.length+' 筆未指定時段的「無法排課」備註，請人工確認日期與時段；程式不會自行推定為整日停課。例：'+unspecified.slice(0,5).map(x=>x.teacher+'／星期'+x.weekday+'：'+x.note).join('；')]:[];
+  }
   const samples=Array.from(matches.values()).slice(0,8).map(x=>
     x.teacher+'／'+x.student+' '+x.date+' '+x.start+'-'+x.end+
     ' 與來源禁排時段 '+x.blockedStart+'-'+x.blockedEnd+' 重疊（來源列 '+x.sourceRow+'）'
@@ -2326,6 +2332,29 @@ function parseRawPurpleCourse(item, year = new Date().getFullYear()){
   }];
 }
 
+
+function parseRawAbsenceAnnotations(item, referenceDate=todayKey()){
+  const out=[];
+  for(const note of item.annotations||[]){
+    const rawText=str(note);
+    const absenceRe=/(\d{1,2})\/(\d{1,2})\s*p(?!\s*調)(?=$|[^a-z0-9])/gi;
+    let m;
+    while((m=absenceRe.exec(rawText))){
+      const d=parseDateFlexible(m[1]+'/'+m[2],referenceDate);
+      if(d&&!out.some(x=>x.action==='請假'&&x.originalDate===d&&x.student===item.student&&x.originalTime===item.time)){
+        out.push({
+          id:'',fixedId:'',weekday:item.weekday,colorStatus:item.colorStatus,colorHex:item.colorHex,
+          originalDate:d,originalTime:item.time,originalEndTime:item.endTime||'',
+          action:'請假',newDate:d,newTime:item.time,newEndTime:item.endTime||'',
+          student:item.student,course:item.course,teacher:item.teacher,site:item.site,
+          note:'來源：開學課表；'+note,source:'開學課表'
+        });
+      }
+    }
+  }
+  return out;
+}
+
 function parseRawAdjustmentAnnotations(item, year = new Date().getFullYear()){
   const out=[];
   for(const note of item.annotations||[]){
@@ -2420,7 +2449,16 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
       for(const rawLine of cellText.split(/\r?\n/).map(str).filter(Boolean)){
         const line=rawLine.trim();
         const timeMatch=line.match(/^(\d{1,2}:?\d{2})\s*[-~～至]\s*(\d{1,2}:?\d{2})\s*(.*)$/);
-        if(!timeMatch) continue;
+        if(!timeMatch){
+          if(/^\d{3,4}/.test(line)){
+            unclassifiedItems.push({teacher,weekday,time:'',student:line,raw:line,colorStatus:'unknown',note:'[無法判讀的來源時段] 以數字開頭但缺少有效的開始－下課時間區間'});
+          }else if(/(?:近期)?無法排課|不能排課|不可排課|休息時段/i.test(line)){
+            unavailableSlots.push({teacher,weekday,start:'',end:'',note:line,raw:line,sourceRow:r+1,allDayOrUnspecified:true});
+          }else if(/可調補加課|可上課/.test(line)){
+            openSlots.push({teacher,weekday,start:'',end:'',raw:line,sourceRow:r+1,availabilityNote:true});
+          }
+          continue;
+        }
         const start=timeKey(timeMatch[1]), end=timeKey(timeMatch[2]), remainder=str(timeMatch[3]);
         if(start&&end&&isUnavailableSlot(remainder)){
           unavailableSlots.push({teacher,weekday,start,end,note:remainder,raw:line,sourceRow:r+1});
@@ -2477,6 +2515,8 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
   // 若課程註記是「9/30p調10/13b+45min」，這是指定日期單次移課，不是每週固定課。
   // 「9/28p調9/21、10/5、10/12各+30min」則只對調後的多個明列日期套用加時。
   for(const item of durationRows){
+    // 加時列也可能同時有「10/10p」等請假註記；請假日期獨立解析，避免被加時流程略過。
+    adjustments.push(...parseRawAbsenceAnnotations(item,dateReference));
     const annotationText=(item.annotations||[]).join('；');
     const targetDateStrings=[], sourceDateStrings=[];
     const movedListRe=/(\d{1,2})\/(\d{1,2})[^()]*?調\s*((?:\d{1,2}\/\d{1,2})(?:\s*[、，,]\s*\d{1,2}\/\d{1,2})*)/g;
@@ -2512,9 +2552,33 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
       continue;
     }
     let targetTokens=moveTargets.length?moveTargets:[];
+    if(!targetTokens.length && item.durationFromStudent){
+      const absenceDates=new Set();
+      for(const m of annotationText.matchAll(/(\d{1,2})\/(\d{1,2})\s*p(?!\s*調)(?=$|[^a-z0-9])/gi)){
+        const d=parseDateFlexible(m[1]+'/'+m[2],dateReference);
+        if(d) absenceDates.add(d);
+      }
+      const allDateStrings=[...annotationText.matchAll(/(\d{1,2})\/(\d{1,2})/g)]
+        .map(m=>m[1]+'/'+m[2])
+        .filter(token=>!absenceDates.has(parseDateFlexible(token,dateReference)));
+      targetTokens=normalizeDates(allDateStrings);
+    }
+    if(!targetTokens.length && item.durationFromAnnotation){
+      // 備註型加時只取「加時／加N分／+Nmin」直接關聯的日期，避免把其他請假日期當成加時日。
+      const extensionDateRe=/(?:^|[^0-9])((?:\d{1,2}\/\d{1,2}\s*[、，,和及]?\s*)+)[^()]{0,12}?(?:加时|加時|加\s*(?:30|45)\s*分|(?:\+|＋)\s*(?:30|45)\s*min)/i;
+      const linked=annotationText.match(extensionDateRe);
+      if(linked){
+        const tokens=[...linked[1].matchAll(/(\d{1,2})\/(\d{1,2})/g)].map(m=>m[1]+'/'+m[2]);
+        targetTokens=normalizeDates(tokens);
+      }
+    }
     if(!targetTokens.length){
       const allDateStrings=[...annotationText.matchAll(/(\d{1,2})\/(\d{1,2})/g)].map(m=>m[1]+'/'+m[2]);
-      targetTokens=normalizeDates(allDateStrings);
+      const uniqueDates=normalizeDates(allDateStrings);
+      // 僅在沒有明確請假日期、沒有多項互相衝突的日期時才使用退路。
+      const absenceDates=new Set([...annotationText.matchAll(/(\d{1,2})\/(\d{1,2})\s*p(?!\s*調)(?=$|[^a-z0-9])/gi)]
+        .map(m=>parseDateFlexible(m[1]+'/'+m[2],dateReference)).filter(Boolean));
+      targetTokens=uniqueDates.filter(d=>!absenceDates.has(d));
     }
     const base=fixed.find(x=>
       x.weekday===item.weekday &&
