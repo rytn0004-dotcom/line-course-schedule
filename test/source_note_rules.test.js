@@ -7,6 +7,7 @@ const {
   extractReminderStudentNames,
   parseDurationTargetDates,
   parseSameDayTimeChangeNote,
+  parseTeacherAbsenceNote,
   parseSingleDateOnlyNote,
   parseTeacherConfirmUntil,
   splitWrappedCourseLines,
@@ -60,6 +61,20 @@ test('joins wrapped note lines only when parentheses are still open', () => {
     '1900-2030繹桓(9/25p調10/5b， 10/9 1230-1400)',
     '2030-2200慕萱'
   ]);
+});
+
+test('attaches standalone adjustment lines to the preceding course', () => {
+  const result = splitWrappedCourseLines(
+    '1830-2000苡安(10/9p)\\n(10/16p調10/17b)'
+  );
+  assert.equal(result.length, 1);
+  assert.equal(result[0].text, '1830-2000苡安(10/9p) (10/16p調10/17b)');
+});
+
+test('recognizes teacher leave but not teacher-leave moves as cancellations', () => {
+  assert.equal(parseTeacherAbsenceNote('10/17師p', 2026), '2026-10-17');
+  assert.equal(parseTeacherAbsenceNote('10/5師p', 2026), '2026-10-05');
+  assert.equal(parseTeacherAbsenceNote('10/5師p調10/14b', 2026), '');
 });
 
 test('resolves explicit substitute teacher and course labels', () => {
