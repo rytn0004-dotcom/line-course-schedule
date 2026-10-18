@@ -101,6 +101,50 @@ test('uses the explicit destination-cell time when it differs from the source mo
   assert.match(merged[0].note, /原始調課/);
 });
 
+test('uses the longer date-specific slot from the uploaded timetable for each listed target date', () => {
+  const sourceMoves = ['2026-10-08', '2026-10-15', '2026-10-22'].map((newDate, index) => ({
+    id: 'ADJ-SOURCE-' + index,
+    fixedId: 'FS-怡涵',
+    originalDate: '2026-10-01',
+    originalTime: '18:00',
+    action: '調課',
+    newDate,
+    newTime: '18:00-19:30',
+    student: '怡涵',
+    course: '',
+    teacher: '鄭雅方',
+    site: '',
+    note: '來源：開學課表；10/1p調10/8b、10/15b、10/22b',
+    source: '開學課表'
+  }));
+  const destinationSlots = ['2026-10-08', '2026-10-15', '2026-10-22'].map((newDate, index) => ({
+    id: 'ADJ-TARGET-' + index,
+    fixedId: '',
+    originalDate: '',
+    originalTime: '',
+    action: '補課',
+    newDate,
+    newTime: '18:00-20:00',
+    student: '怡涵',
+    course: '',
+    teacher: '鄭雅方',
+    site: '',
+    note: '[單次課程] 10/8、10/15、10/22；原始時段 18:00-20:00',
+    source: '開學課表'
+  }));
+
+  const merged = mergeExplicitMoveDestinationOverrides([...sourceMoves, ...destinationSlots]);
+  assert.equal(merged.length, 3);
+  for (const item of merged) {
+    assert.equal(item.originalDate, '2026-10-01');
+    assert.equal(item.action, '調課');
+    assert.equal(item.newTime, '18:00-20:00');
+    assert.equal(item.student, '怡涵');
+    assert.match(item.note, /原始調課/);
+  }
+  assert.deepEqual(merged.map(item => item.newDate).sort(), ['2026-10-08', '2026-10-15', '2026-10-22']);
+});
+
 test('does not merge ambiguous move destinations', () => {
   const move = {
     originalDate: '2026-10-15', originalTime: '18:00', action: '調課',
