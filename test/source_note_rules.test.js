@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const {
   addMinutesToTime,
   normalizeTimeRange,
+  hasDateScopedTargetOverride,
   extractReminderStudentNames,
   parseDurationTargetDates,
   parseCourseStartDateNote,
@@ -54,6 +55,29 @@ test('preserves start and end in course time ranges', () => {
 test('calculates extension end times safely', () => {
   assert.equal(addMinutesToTime('12:30', 30), '13:00');
   assert.equal(addMinutesToTime('23:45', 30), '');
+});
+
+test('suppresses weekly slot when an explicit move target replaces it on the same start time', () => {
+  const adjustments = [{
+    originalDate: '2026-10-01',
+    newDate: '2026-10-22',
+    action: '調課',
+    student: '怡涵',
+    newTime: '18:00-20:00',
+    note: '[單次課程] 目的日課程；原始調課：10/1p調10/8b、10/15b、10/22b'
+  }];
+  assert.equal(hasDateScopedTargetOverride(adjustments, '2026-10-22', '怡涵', '18:00'), true);
+  assert.equal(hasDateScopedTargetOverride(adjustments, '2026-10-23', '怡涵', '18:00'), false);
+  assert.equal(hasDateScopedTargetOverride(adjustments, '2026-10-22', '另一位學生', '18:00'), false);
+  assert.equal(hasDateScopedTargetOverride(adjustments, '2026-10-22', '怡涵', '19:00'), false);
+  assert.equal(hasDateScopedTargetOverride([{
+    originalDate: '',
+    newDate: '2026-10-22',
+    action: '補課',
+    student: '怡涵',
+    newTime: '18:00-20:00',
+    note: '[單次課程] 單次額外課程'
+  }], '2026-10-22', '怡涵', '18:00'), false);
 });
 
 test('extracts group members without confusing the group label or date note for a student', () => {
