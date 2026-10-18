@@ -7,6 +7,7 @@ const {
   normalizeTimeRange,
   hasDateScopedTargetOverride,
   mergeExplicitMoveDestinationOverrides,
+  isSourceImportedFixedNote,
   extractReminderStudentNames,
   parseDurationTargetDates,
   parseCourseStartDateNote,
@@ -22,6 +23,12 @@ test('parses same-day time changes with the source timetable notation', () => {
   assert.deepEqual(parseSameDayTimeChangeNote('10/9改1030~1230', 2026), {
     date: '2026-10-09', start: '10:30', end: '12:30'
   });
+});
+
+test('source-imported fixed-row notes are not reparsed as a second adjustment source', () => {
+  assert.equal(isSourceImportedFixedNote('來源：開學課表自動同步；來源註記：10/15調10/12b'), true);
+  assert.equal(isSourceImportedFixedNote('人工備註：10/15調10/12b'), false);
+  assert.equal(isSourceImportedFixedNote(''), false);
 });
 
 test('reads effective start dates from the source timetable notes', () => {
