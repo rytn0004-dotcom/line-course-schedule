@@ -7,6 +7,7 @@ const {
   normalizeTimeRange,
   extractReminderStudentNames,
   parseDurationTargetDates,
+  parseCourseStartDateNote,
   parseSameDayTimeChangeNote,
   parseTeacherAbsenceNote,
   parseSingleDateOnlyNote,
@@ -19,6 +20,13 @@ test('parses same-day time changes with the source timetable notation', () => {
   assert.deepEqual(parseSameDayTimeChangeNote('10/9改1030~1230', 2026), {
     date: '2026-10-09', start: '10:30', end: '12:30'
   });
+});
+
+test('reads effective start dates from the source timetable notes', () => {
+  assert.equal(parseCourseStartDateNote('10/6開始，週三改週二', 2026), '2026-10-06');
+  assert.equal(parseCourseStartDateNote('10/6開始，週五改週四', 2026), '2026-10-06');
+  assert.equal(parseCourseStartDateNote('週三改週二', 2026), '');
+  assert.equal(parseCourseStartDateNote('13/40開始', 2026), '');
 });
 
 test('recognizes one-date-only course annotations without treating moves as one-date classes', () => {
