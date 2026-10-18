@@ -7,6 +7,7 @@ const {
   extractReminderStudentNames,
   parseDurationTargetDates,
   parseSameDayTimeChangeNote,
+  parseCourseStartDateNote,
   normalizeStudentNameForContact,
   parseSingleDateOnlyNote,
   parseTeacherAbsenceNote,
@@ -245,6 +246,7 @@ function parseFixed(rows){
   const hr=findHeaderRow(rows,['固定課表ID','星期','上課時間','學生','課程','老師','校區','有效迄日','啟用']);
   if(hr<0) throw new Error('固定課表欄位不正確。');
   const h=hmap(rows[hr]), out=[];
+  const parseYear=Number(todayKey().slice(0,4));
   const enabledIssues=[];
   const teacherDiagnostics=[];
   for(let i=hr+1;i<rows.length;i++){
@@ -263,7 +265,12 @@ function parseFixed(rows){
     if(!weekday||!time) continue;
     const student=str(r[h['學生']])||extractStudentFromTime(rawTime);
     if(!student || isUnavailableSlot(student)) continue;
-    out.push({id,weekday,time,endTime:range.end,student,course:str(r[h['課程']]),teacher:str(r[h['老師']]),site:normalizeSite(r[h['校區']]),until:dateKey(r[h['有效迄日']]),template:str(r[h['通知模板']]),note:str(r[h['備註']]),rawTime});
+    const note=str(r[h['備註']]);
+    const explicitStart=note.match(/有效起日[:：]\s*(\d{4}-\d{2}-\d{2})/);
+    const startsOn=explicitStart&&isValidDateKey(explicitStart[1])
+      ? explicitStart[1]
+      : parseCourseStartDateNote(note,parseYear);
+    out.push({id,weekday,time,endTime:range.end,student,course:str(r[h['課程']]),teacher:str(r[h['老師']]),site:normalizeSite(r[h['校區']]),until:dateKey(r[h['有效迄日']]),startsOn,template:str(r[h['通知模板']]),note,rawTime});
   }
   // 診斷指定學生為何沒有進入「實際課程」。只記錄少禹相關資料，不改變既有排課結果。
   const diagnosticStudents=['陳少禹','少禹'];
@@ -637,6 +644,7 @@ function buildRows(fixed, adjusts, fromDate, days){
     const wd=weekdayLabel(d);
     for(const f of fixed){
       if(!str(f.student) || isUnavailableSlot(f.student)) continue;
+      if(f.startsOn&&isValidDateKey(f.startsOn)&&d<f.startsOn)continue;
       if(f.until&&/^\d{4}-\d{2}-\d{2}$/.test(f.until)&&d>f.until)continue;
       if(norm(f.weekday)!==norm(wd))continue;
 
@@ -1267,7 +1275,7 @@ async function syncSourceIntoSchedule(){
     set('校區',normalizeSite(x.site));
     set('有效迄日',x.untilDate||'');
     set('啟用',x.colorStatus==='yellow'?'否':'是');
-    set('備註','來源：開學課表自動同步'+(x.colorStatus==='yellow'?'；黃色確認中，預設停用；字色 '+(x.colorHex||'未知'):'')+(x.note?'；'+x.note:''));
+    set('備註','來源：開學課表自動同步'+(x.startsOn?'；有效起日：'+x.startsOn:'')+(x.colorStatus==='yellow'?'；黃色確認中，預設停用；字色 '+(x.colorHex||'未知'):'')+(x.note?'；'+x.note:''));
     set('通知模板','家長一般/老師通知');
     return row;
   };
