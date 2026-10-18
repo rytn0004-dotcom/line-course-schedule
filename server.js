@@ -5,6 +5,7 @@ const {
   addMinutesToTime,
   normalizeTimeRange,
   hasDateScopedTargetOverride,
+  mergeExplicitMoveDestinationOverrides,
   extractReminderStudentNames,
   parseDurationTargetDates,
   parseSameDayTimeChangeNote,
@@ -2222,7 +2223,7 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
   const isMoveOrigin=a=>
     a.originalDate&&a.newDate&&a.originalDate!==a.newDate&&
     /調課|移課|改課|代課/.test(norm(a.action));
-  for(const adj of adjustments){
+  for(const adj of mergeExplicitMoveDestinationOverrides(adjustments)){
     if(!adj.newDate||!adj.student){deduped.push(adj);continue;}
     const isCancel=/^(請假|取消|停課)$/.test(adj.action);
     const startTime=parseTimeRange(adj.newTime).start||timeKey(adj.newTime)||str(adj.newTime);
