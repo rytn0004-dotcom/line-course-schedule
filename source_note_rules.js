@@ -184,6 +184,24 @@ function parseTeacherConfirmUntil(value, year = new Date().getFullYear()) {
   return String(year).padStart(4, '0') + '-' + String(month).padStart(2, '0') + '-' + String(lastDay).padStart(2, '0');
 }
 
+// A date-scoped destination row with the same student and start time replaces,
+// rather than duplicates, that student's weekly slot on the target date.
+function hasDateScopedTargetOverride(adjustments, date, student, time) {
+  const targetDate = String(date ?? '').trim();
+  const targetStudent = normalizeStudentNameForContact(student);
+  const targetRange = normalizeTimeRange(time);
+  const targetStart = targetRange ? targetRange.split('-')[0] : '';
+  if (!targetDate || !targetStudent || !targetStart) return false;
+  return (Array.isArray(adjustments) ? adjustments : []).some(item => {
+    if (String(item?.newDate ?? '').trim() !== targetDate) return false;
+    if (normalizeStudentNameForContact(item?.student) !== targetStudent) return false;
+    if (!/\\[單次課程\\]|\\[單次／紫色調課\\]|\\[紫色調課\\]/.test(String(item?.note ?? ''))) return false;
+    const range = normalizeTimeRange(item?.newTime);
+    const start = range ? range.split('-')[0] : '';
+    return start === targetStart;
+  });
+}
+
 function normalizeStudentNameForContact(value) {
   return String(value ?? '').trim()
     .replace(/(?:國文|數學|理化|物理|化學|英文|生物|自然|社會)$/, '')
@@ -227,6 +245,7 @@ module.exports = {
   splitWrappedCourseLines,
   addMinutesToTime,
   normalizeTimeRange,
+  hasDateScopedTargetOverride,
   extractReminderStudentNames,
   isValidDateKey,
   parseDurationTargetDates,
