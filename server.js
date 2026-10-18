@@ -4,6 +4,7 @@ const { google } = require('googleapis');
 const {
   addMinutesToTime,
   normalizeTimeRange,
+  hasDateScopedTargetOverride,
   extractReminderStudentNames,
   parseDurationTargetDates,
   parseSameDayTimeChangeNote,
@@ -647,6 +648,10 @@ function buildRows(fixed, adjusts, fromDate, days){
       if(f.startsOn&&isValidDateKey(f.startsOn)&&d<f.startsOn)continue;
       if(f.until&&/^\d{4}-\d{2}-\d{2}$/.test(f.until)&&d>f.until)continue;
       if(norm(f.weekday)!==norm(wd))continue;
+      // If this date has an explicit cross-date move that resolves to the same
+      // student and start time, the date-scoped destination lesson replaces the
+      // weekly slot instead of generating overlapping 18:00-19:30 and 18:00-20:00 rows.
+      if(hasDateScopedTargetOverride(adjusts,d,f.student,f.time))continue;
 
       const base={date:d,weekday:wd,time:f.endTime?f.time+'-'+f.endTime:f.time,student:f.student,course:f.course,teacher:f.teacher,site:f.site,source:'固定課表',fixedId:f.id,adjustId:'',adjustResult:'無',note:f.note||'',template:f.template||''};
       const wide=dateWide.get(d);
