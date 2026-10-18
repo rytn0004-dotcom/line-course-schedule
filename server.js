@@ -115,6 +115,10 @@ function timeKey(v){
   return '';
 }
 function parseTimeRange(v){ const m=str(v).replace(/\s+/g,'').match(/(\d{1,2}:?\d{2})[-~～至](\d{1,2}:?\d{2})/); return m?{start:timeKey(m[1]),end:timeKey(m[2])}:{start:'',end:''}; }
+function timeRangeValue(v){
+  const range=parseTimeRange(v);
+  return range.start&&range.end ? range.start+'-'+range.end : (range.start||timeKey(v));
+}
 function extractStudentFromTime(v){ const m=str(v).match(/(?:\d{1,2}:?\d{2})\s*[-~～至]\s*(?:\d{1,2}:?\d{2})\s*([^()（）]*)/); return m?str(m[1]):''; }
 function isValidDateKey(value){
   const m=str(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -292,7 +296,7 @@ function parseAdjust(rows, correctionRows=[]){
     for(let i=legacyHr+1;i<rows.length;i++){
       const r=rows[i]||[],id=str(r[h['調課ID']]); if(!id)continue;
       if(h['確認']!==undefined&&norm(r[h['確認']])!=='是')continue;
-      out.push({id,fixedId:str(r[h['原固定課表ID']]),originalDate:parseDateFlexible(r[h['原日期']]),originalTime:parseTimeRange(r[h['原時間']]).start||timeKey(r[h['原時間']]),action:str(r[h['動作']]),newDate:parseDateFlexible(r[h['新日期']]),newTime:parseTimeRange(r[h['新時間']]).start||timeKey(r[h['新時間']]),newEndTime:parseTimeRange(r[h['新時間']]).end,student:str(r[h['學生']]),course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:str(r[h['新校區']]),note:str(r[h['備註']]),source:'調課課程'});
+      out.push({id,fixedId:str(r[h['原固定課表ID']]),originalDate:parseDateFlexible(r[h['原日期']]),originalTime:parseTimeRange(r[h['原時間']]).start||timeKey(r[h['原時間']]),action:str(r[h['動作']]),newDate:parseDateFlexible(r[h['新日期']]),newTime:timeRangeValue(r[h['新時間']]),newEndTime:parseTimeRange(r[h['新時間']]).end,student:str(r[h['學生']]),course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:str(r[h['新校區']]),note:str(r[h['備註']]),source:'調課課程'});
     }
   } else if(simpleHr>=0){
     const h=hmap(rows[simpleHr]);
@@ -303,7 +307,7 @@ function parseAdjust(rows, correctionRows=[]){
       if(!d)continue;
       if(!student && !/整日/.test(action))continue;
       if(!t && !/整日/.test(action))continue;
-      out.push({id:'',fixedId:'',originalDate:d,originalTime:t,action,newDate:parseDateFlexible(r[h['新日期']]),newTime:parseTimeRange(r[h['新時間']]).start||timeKey(r[h['新時間']]),newEndTime:parseTimeRange(r[h['新時間']]).end,student,course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:'',note:'',source:'調課課程'});
+      out.push({id:'',fixedId:'',originalDate:d,originalTime:t,action,newDate:parseDateFlexible(r[h['新日期']]),newTime:timeRangeValue(r[h['新時間']]),newEndTime:parseTimeRange(r[h['新時間']]).end,student,course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:'',note:'',source:'調課課程'});
     }
   }
 
@@ -350,7 +354,7 @@ function parseAdjust(rows, correctionRows=[]){
 
         pushCorrection({
           id:'CORR-'+(i+1),fixedId:'',originalDate:d,originalTime:t,action,newDate,
-          newTime:parseTimeRange(r[h['新時間']]).start||timeKey(r[h['新時間']]),newEndTime:parseTimeRange(r[h['新時間']]).end,
+          newTime:timeRangeValue(r[h['新時間']]),newEndTime:parseTimeRange(r[h['新時間']]).end,
           student,course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:'',
           note,source:'課程校正'
         });
@@ -677,7 +681,7 @@ function buildRows(fixed, adjusts, fromDate, days){
             if(moveActions.length>1){
               const emitted=new Set();
               for(const move of moveActions){
-                const nd=move.newDate,nt=move.newTime||f.time;
+                const nd=move.newDate,nt=move.newTime||base.time;
                 const moveKey=[nd,nt,compact(move.student||f.student),compact(move.teacher||f.teacher)].join('|');
                 if(emitted.has(moveKey))continue;
                 emitted.add(moveKey);
@@ -691,7 +695,7 @@ function buildRows(fixed, adjusts, fromDate, days){
                 });
               }
             }else{
-              const nd=a.newDate||d,nt=a.newTime||f.time;
+              const nd=a.newDate||d,nt=a.newTime||base.time;
               out.push({
                 ...base,date:nd,weekday:weekdayLabel(nd),time:nt,
                 student:a.student||f.student,course:a.course||f.course,teacher:a.teacher||f.teacher,
@@ -716,7 +720,7 @@ function buildRows(fixed, adjusts, fromDate, days){
           const nd=a.newDate;
           if(!nd || nd===d || nd<fromDate||nd>toDate)continue;
           out.push({
-            ...base,date:nd,weekday:weekdayLabel(nd),time:a.newTime||f.time,
+            ...base,date:nd,weekday:weekdayLabel(nd),time:a.newTime||base.time,
             student:a.student||f.student,course:a.course||f.course,teacher:a.teacher||f.teacher,
             site:a.site||f.site,source:a.source||'課程校正',fixedId:f.id,
             adjustId:a.id||'DATE-MOVE-'+d+'-'+nd,adjustResult:'已調課',
@@ -2068,6 +2072,7 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
     if(!teacher)continue;
     const teacherNote=teacherLines.slice(1).join(' ');
     const teacherUntil=parseTeacherConfirmUntil(teacherNote,year);
+    const teacherAbsenceDate=parseTeacherAbsenceNote(teacherCell,year);
     const rowCellTexts=Object.entries(weekdayCols).map(([col,day])=>({weekday:day,text:rawCellText(row[Number(col)])}));
 
     for(const [col,weekday] of Object.entries(weekdayCols)){
@@ -2079,6 +2084,17 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
           cellText,
           rowCellTexts
         };
+        if(teacherAbsenceDate&&weekdayLabel(teacherAbsenceDate)===item.weekday&&item.colorStatus==='black'){
+          adjustments.push({
+            id:'',fixedId:'',weekday:item.weekday,
+            originalDate:teacherAbsenceDate,originalTime:item.time,
+            action:'停課',newDate:teacherAbsenceDate,
+            newTime:item.endTime?item.time+'-'+item.endTime:item.time,
+            student:item.student,course:item.course,teacher:item.teacher,site:item.site,
+            note:'來源：老師欄請假註記；'+teacherCell.replace(/\s+/g,' ').trim()+'；該日不排課',
+            source:'開學課表'
+          });
+        }
         if(item.durationAdjustmentMinutes&&['black','yellow','purple'].includes(item.colorStatus)){
           durationRows.push(item);
           continue;
