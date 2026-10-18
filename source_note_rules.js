@@ -79,6 +79,15 @@ function timeKey(value) {
   return String(hour).padStart(2, '0') + ':' + String(minute).padStart(2, '0');
 }
 
+function normalizeTimeRange(value) {
+  const source = String(value ?? '').trim().replace(/\\s+/g, '');
+  const m = source.match(/^(\\d{1,2}:?\\d{2})[-~～至](\\d{1,2}:?\\d{2})$/);
+  if (!m) return timeKey(value);
+  const start = timeKey(m[1]), end = timeKey(m[2]);
+  if (!start) return '';
+  return end ? start + '-' + end : start;
+}
+
 function addMinutesToTime(value, minutes) {
   const key = timeKey(value);
   const amount = Number(minutes);
@@ -207,6 +216,7 @@ module.exports = {
   sourceTeacherCourseOverride,
   splitWrappedCourseLines,
   addMinutesToTime,
+  normalizeTimeRange,
   extractReminderStudentNames,
   isValidDateKey,
   parseDurationTargetDates,
