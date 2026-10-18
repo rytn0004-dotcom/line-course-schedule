@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   addMinutesToTime,
+  normalizeTimeRange,
   extractReminderStudentNames,
   parseDurationTargetDates,
   parseSameDayTimeChangeNote,
@@ -34,6 +35,12 @@ test('extracts only the explicit dates for the +30 minute schedule variant', () 
       targetDates: ['2026-09-21', '2026-10-05', '2026-10-12']
     }
   );
+});
+
+test('preserves start and end in course time ranges', () => {
+  assert.equal(normalizeTimeRange('0900-1030'), '09:00-10:30');
+  assert.equal(normalizeTimeRange('09:00~10:30'), '09:00-10:30');
+  assert.equal(normalizeTimeRange('13:00'), '13:00');
 });
 
 test('calculates extension end times safely', () => {
