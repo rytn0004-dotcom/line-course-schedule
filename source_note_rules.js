@@ -207,7 +207,8 @@ function hasDateScopedTargetOverride(adjustments, date, student, time) {
   });
 }
 
-// Resolve an explicit destination-cell lesson against its matching source move,\n// even when the destination start time differs from the original weekly slot.\n// Only merge unambiguous one-source/one-destination pairs for the same target date,\n// student, teacher and site; ambiguous groups are left untouched.\nfunction mergeExplicitMoveDestinationOverrides(adjustments) {
+// Reconcile a source-date move with its explicit one-off destination row when the destination's actual time differs.
+function mergeExplicitMoveDestinationOverrides(adjustments) {
   const source = Array.isArray(adjustments) ? adjustments : [];
   const isDestination = item =>
     /\[單次課程\]/.test(String(item?.note ?? '')) &&
