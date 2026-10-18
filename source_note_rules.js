@@ -62,6 +62,16 @@ function parseMonthDay(monthValue, dayValue, year = new Date().getFullYear()) {
   return isValidDateKey(key) ? key : '';
 }
 
+// Capture explicit effective-start notes from the source timetable, e.g.
+// "10/6開始，週三改週二". This prevents the newly moved weekly slot from
+// appearing in historical build windows before its stated start date.
+function parseCourseStartDateNote(value, year = new Date().getFullYear()) {
+  const source = String(value ?? '').replace(/\s+/g, '');
+  const match = source.match(/(?:^|[^0-9])(\d{1,2})\/(\d{1,2})開始/);
+  if (!match) return '';
+  return parseMonthDay(match[1], match[2], year);
+}
+
 function timeKey(value) {
   const source = String(value ?? '').trim().replace(/\s+/g, '');
   const m = source.match(/^(\d{1,2}):([0-5]\d)$/) || source.match(/^(\d{3,4})$/);
@@ -221,6 +231,7 @@ module.exports = {
   isValidDateKey,
   parseDurationTargetDates,
   parseMonthDay,
+  parseCourseStartDateNote,
   parseSameDayTimeChangeNote,
   parseTeacherAbsenceNote,
   parseSingleDateOnlyNote,
