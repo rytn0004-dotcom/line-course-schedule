@@ -275,6 +275,10 @@ function mergeExplicitMoveDestinationOverrides(adjustments) {
     .filter(Boolean);
 }
 
+function isSourceImportedFixedNote(value) {
+  return /來源：開學課表自動同步/.test(String(value ?? ''));
+}
+
 function normalizeStudentNameForContact(value) {
   return String(value ?? '').trim()
     .replace(/(?:國文|數學|理化|物理|化學|英文|生物|自然|社會)$/, '')
@@ -320,6 +324,7 @@ module.exports = {
   normalizeTimeRange,
   hasDateScopedTargetOverride,
   mergeExplicitMoveDestinationOverrides,
+  isSourceImportedFixedNote,
   extractReminderStudentNames,
   isValidDateKey,
   parseDurationTargetDates,
