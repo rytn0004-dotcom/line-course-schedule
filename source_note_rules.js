@@ -18,7 +18,13 @@ function splitWrappedCourseLines(value) {
     if (!text) continue;
     const start = raw.index + raw[0].length - raw[0].trimStart().length;
     const previous = lines[lines.length - 1];
-    if (previous && unclosedParentheses(previous.text) && !isCourseStart(text)) {
+    const isStandaloneAnnotation =
+      /^[（(][^（）()]*[）)]?\s*$/.test(text) &&
+      /\d{1,2}\/\d{1,2}|調|請假|加時|加課|補課|改|代|僅|\bp\b|\bb\b/i.test(text);
+    if (previous && !isCourseStart(text) &&
+        (unclosedParentheses(previous.text) || isStandaloneAnnotation)) {
+      // Some exports put a second parenthetical note on its own line even when
+      // the course line above already closed its first pair of parentheses.
       previous.text += ' ' + text;
     } else {
       lines.push({ text, start });
@@ -92,6 +98,15 @@ function parseSameDayTimeChangeNote(value, year = new Date().getFullYear()) {
   const start = timeKey(m[3]), end = timeKey(m[4]);
   if (!date || !start || !end) return null;
   return { date, start, end };
+}
+
+// A plain "10/17師p" means the teacher is absent that date. Notes containing
+// "師p調..." are handled by the move parser first and must not become an extra cancellation.
+function parseTeacherAbsenceNote(value, year = new Date().getFullYear()) {
+  const source = String(value ?? '').trim();
+  const m = source.match(/(?:^|[^0-9])(\d{1,2})\/(\d{1,2})\s*師\s*p(?!\s*調)(?=$|[^a-z0-9])/i);
+  if (!m) return '';
+  return parseMonthDay(m[1], m[2], year);
 }
 
 // Only match explicit one-date wording. Ordinary p/調課 annotations must not be treated as single-date classes.
@@ -196,6 +211,7 @@ module.exports = {
   parseDurationTargetDates,
   parseMonthDay,
   parseSameDayTimeChangeNote,
+  parseTeacherAbsenceNote,
   parseSingleDateOnlyNote,
   parseTeacherConfirmUntil,
   timeKey
