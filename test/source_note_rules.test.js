@@ -65,7 +65,7 @@ test('joins wrapped note lines only when parentheses are still open', () => {
 
 test('attaches standalone adjustment lines to the preceding course', () => {
   const result = splitWrappedCourseLines(
-    '1830-2000苡安(10/9p)\\n(10/16p調10/17b)'
+    '1830-2000苡安(10/9p)\n(10/16p調10/17b)'
   );
   assert.equal(result.length, 1);
   assert.equal(result[0].text, '1830-2000苡安(10/9p) (10/16p調10/17b)');
