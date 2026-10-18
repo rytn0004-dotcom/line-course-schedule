@@ -207,7 +207,74 @@ function hasDateScopedTargetOverride(adjustments, date, student, time) {
   });
 }
 
-// Resolve an explicit destination-cell lesson against its matching source move,\n// even when the destination start time differs from the original weekly slot.\n// Only merge unambiguous one-source/one-destination pairs for the same target date,\n// student, teacher and site; ambiguous groups are left untouched.\nfunction mergeExplicitMoveDestinationOverrides(adjustments) {\n  const source = Array.isArray(adjustments) ? adjustments : [];\n  const isDestination = item => /\\[單次課程\\]/.test(String(item?.note ?? '')) &&\n    Boolean(String(item?.newDate ?? '').trim()) && Boolean(String(item?.student ?? '').trim());\n  const isOriginMove = item => {\n    const from = String(item?.originalDate ?? '').trim();\n    const to = String(item?.newDate ?? '').trim();\n    return Boolean(from && to && from !== to) &&\n      /調課|移課|改課|代課/.test(String(item?.action ?? '')) &&\n      !/\\[單次課程\\]\\s*目的日課程/.test(String(item?.note ?? ''));\n  };\n  const groupKey = item => [\n    String(item?.newDate ?? '').trim(),\n    normalizeStudentNameForContact(item?.student),\n    String(item?.teacher ?? '').trim().replace(/\\s+/g, ''),\n    String(item?.site ?? '').trim().replace(/\\s+/g, '')\n  ].join('|');\n  const groups = new Map();\n  source.forEach((item, index) => {\n    if (!item?.newDate || !item?.student) return;\n    const key = groupKey(item);\n    if (!groups.has(key)) groups.set(key, { origins: [], destinations: [] });\n    const group = groups.get(key);\n    if (isOriginMove(item)) group.origins.push({ item, index });\n    if (isDestination(item)) group.destinations.push({ item, index });\n  });\n\n  const replacements = new Map();\n  const skipped = new Set();\n  for (const group of groups.values()) {\n    if (group.origins.length !== 1 || group.destinations.length !== 1) continue;\n    const origin = group.origins[0];\n    const destination = group.destinations[0];\n    if (origin.index === destination.index) continue;\n    const destinationSourceDate = String(destination.item?.originalDate ?? '').trim();\n    if (destinationSourceDate && destinationSourceDate !== String(origin.item.originalDate ?? '').trim()) continue;\n\n    const merged = {\n      ...origin.item,\n      ...destination.item,\n      originalDate: origin.item.originalDate,\n      originalTime: origin.item.originalTime,\n      action: origin.item.action,\n      fixedId: origin.item.fixedId || destination.item.fixedId || '',\n      course: destination.item.course || origin.item.course || '',\n      teacher: destination.item.teacher || origin.item.teacher || '',\n      site: destination.item.site || origin.item.site || '',\n      note: [\n        String(destination.item.note ?? '').trim(),\n        String(origin.item.note ?? '').trim() &&\n          String(origin.item.note ?? '').trim() !== String(destination.item.note ?? '').trim()\n          ? '原始調課：' + String(origin.item.note ?? '').trim()\n          : ''\n      ].filter(Boolean).join('；')\n    };\n    replacements.set(destination.index, merged);\n    skipped.add(origin.index);\n  }\n\n  return source.filter((_, index) => !skipped.has(index)).map((item, index) => {\n    // A filtered array changes indices; locate each surviving original index instead.\n    const originalIndex = source.findIndex((candidate, i) => !skipped.has(i) && candidate === item);\n    return replacements.get(originalIndex) || item;\n  });\n}\n\nfunction normalizeStudentNameForContact(value) {
+// Resolve an explicit destination-cell lesson against its matching source move,\n// even when the destination start time differs from the original weekly slot.\n// Only merge unambiguous one-source/one-destination pairs for the same target date,\n// student, teacher and site; ambiguous groups are left untouched.\nfunction mergeExplicitMoveDestinationOverrides(adjustments) {
+  const source = Array.isArray(adjustments) ? adjustments : [];
+  const isDestination = item =>
+    /\[單次課程\]/.test(String(item?.note ?? '')) &&
+    Boolean(String(item?.newDate ?? '').trim()) &&
+    Boolean(String(item?.student ?? '').trim());
+  const isOriginMove = item => {
+    const from = String(item?.originalDate ?? '').trim();
+    const to = String(item?.newDate ?? '').trim();
+    return Boolean(from && to && from !== to) &&
+      /調課|移課|改課|代課/.test(String(item?.action ?? '')) &&
+      !/\[單次課程\]\s*目的日課程/.test(String(item?.note ?? ''));
+  };
+  const groupKey = item => [
+    String(item?.newDate ?? '').trim(),
+    normalizeStudentNameForContact(item?.student),
+    String(item?.teacher ?? '').trim().replace(/\s+/g, ''),
+    String(item?.site ?? '').trim().replace(/\s+/g, '')
+  ].join('|');
+  const groups = new Map();
+  source.forEach((item, index) => {
+    if (!item?.newDate || !item?.student) return;
+    const key = groupKey(item);
+    if (!groups.has(key)) groups.set(key, { origins: [], destinations: [] });
+    const group = groups.get(key);
+    if (isOriginMove(item)) group.origins.push({ item, index });
+    if (isDestination(item)) group.destinations.push({ item, index });
+  });
+
+  const replacements = new Map();
+  const skipped = new Set();
+  for (const group of groups.values()) {
+    if (group.origins.length !== 1 || group.destinations.length !== 1) continue;
+    const origin = group.origins[0];
+    const destination = group.destinations[0];
+    if (origin.index === destination.index) continue;
+    const destinationSourceDate = String(destination.item?.originalDate ?? '').trim();
+    if (destinationSourceDate &&
+        destinationSourceDate !== String(origin.item.originalDate ?? '').trim()) continue;
+
+    const merged = {
+      ...origin.item,
+      ...destination.item,
+      originalDate: origin.item.originalDate,
+      originalTime: origin.item.originalTime,
+      action: origin.item.action,
+      fixedId: origin.item.fixedId || destination.item.fixedId || '',
+      course: destination.item.course || origin.item.course || '',
+      teacher: destination.item.teacher || origin.item.teacher || '',
+      site: destination.item.site || origin.item.site || '',
+      note: [
+        String(destination.item.note ?? '').trim(),
+        String(origin.item.note ?? '').trim() &&
+          String(origin.item.note ?? '').trim() !== String(destination.item.note ?? '').trim()
+          ? '原始調課：' + String(origin.item.note ?? '').trim()
+          : ''
+      ].filter(Boolean).join('；')
+    };
+    replacements.set(destination.index, merged);
+    skipped.add(origin.index);
+  }
+
+  return source
+    .map((item, index) => skipped.has(index) ? null : (replacements.get(index) || item))
+    .filter(Boolean);
+}
+
+function normalizeStudentNameForContact(value) {
   return String(value ?? '').trim()
     .replace(/(?:國文|數學|理化|物理|化學|英文|生物|自然|社會)$/, '')
     .replace(/\s+/g, '');
