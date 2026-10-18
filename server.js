@@ -3,6 +3,7 @@ const express = require('express');
 const { google } = require('googleapis');
 const {
   addMinutesToTime,
+  normalizeTimeRange,
   extractReminderStudentNames,
   parseDurationTargetDates,
   parseSameDayTimeChangeNote,
@@ -115,10 +116,6 @@ function timeKey(v){
   return '';
 }
 function parseTimeRange(v){ const m=str(v).replace(/\s+/g,'').match(/(\d{1,2}:?\d{2})[-~～至](\d{1,2}:?\d{2})/); return m?{start:timeKey(m[1]),end:timeKey(m[2])}:{start:'',end:''}; }
-function timeRangeValue(v){
-  const range=parseTimeRange(v);
-  return range.start&&range.end ? range.start+'-'+range.end : (range.start||timeKey(v));
-}
 function extractStudentFromTime(v){ const m=str(v).match(/(?:\d{1,2}:?\d{2})\s*[-~～至]\s*(?:\d{1,2}:?\d{2})\s*([^()（）]*)/); return m?str(m[1]):''; }
 function isValidDateKey(value){
   const m=str(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -296,7 +293,7 @@ function parseAdjust(rows, correctionRows=[]){
     for(let i=legacyHr+1;i<rows.length;i++){
       const r=rows[i]||[],id=str(r[h['調課ID']]); if(!id)continue;
       if(h['確認']!==undefined&&norm(r[h['確認']])!=='是')continue;
-      out.push({id,fixedId:str(r[h['原固定課表ID']]),originalDate:parseDateFlexible(r[h['原日期']]),originalTime:parseTimeRange(r[h['原時間']]).start||timeKey(r[h['原時間']]),action:str(r[h['動作']]),newDate:parseDateFlexible(r[h['新日期']]),newTime:timeRangeValue(r[h['新時間']]),newEndTime:parseTimeRange(r[h['新時間']]).end,student:str(r[h['學生']]),course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:str(r[h['新校區']]),note:str(r[h['備註']]),source:'調課課程'});
+      out.push({id,fixedId:str(r[h['原固定課表ID']]),originalDate:parseDateFlexible(r[h['原日期']]),originalTime:parseTimeRange(r[h['原時間']]).start||timeKey(r[h['原時間']]),action:str(r[h['動作']]),newDate:parseDateFlexible(r[h['新日期']]),newTime:normalizeTimeRange(r[h['新時間']]),newEndTime:parseTimeRange(r[h['新時間']]).end,student:str(r[h['學生']]),course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:str(r[h['新校區']]),note:str(r[h['備註']]),source:'調課課程'});
     }
   } else if(simpleHr>=0){
     const h=hmap(rows[simpleHr]);
@@ -307,7 +304,7 @@ function parseAdjust(rows, correctionRows=[]){
       if(!d)continue;
       if(!student && !/整日/.test(action))continue;
       if(!t && !/整日/.test(action))continue;
-      out.push({id:'',fixedId:'',originalDate:d,originalTime:t,action,newDate:parseDateFlexible(r[h['新日期']]),newTime:timeRangeValue(r[h['新時間']]),newEndTime:parseTimeRange(r[h['新時間']]).end,student,course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:'',note:'',source:'調課課程'});
+      out.push({id:'',fixedId:'',originalDate:d,originalTime:t,action,newDate:parseDateFlexible(r[h['新日期']]),newTime:normalizeTimeRange(r[h['新時間']]),newEndTime:parseTimeRange(r[h['新時間']]).end,student,course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:'',note:'',source:'調課課程'});
     }
   }
 
@@ -354,7 +351,7 @@ function parseAdjust(rows, correctionRows=[]){
 
         pushCorrection({
           id:'CORR-'+(i+1),fixedId:'',originalDate:d,originalTime:t,action,newDate,
-          newTime:timeRangeValue(r[h['新時間']]),newEndTime:parseTimeRange(r[h['新時間']]).end,
+          newTime:normalizeTimeRange(r[h['新時間']]),newEndTime:parseTimeRange(r[h['新時間']]).end,
           student,course:str(r[h['新課程']]),teacher:str(r[h['新老師']]),site:'',
           note,source:'課程校正'
         });
@@ -524,12 +521,13 @@ function parseInlineAdjustments(fixed){
     const timeMoveRe=/(\d{1,2})\/(\d{1,2})[^()]*?改\s*(\d{3,4})(?:\s*[-~～至]\s*(\d{3,4}))?/g;
     while((m=timeMoveRe.exec(text))){
       const from=parseDateFlexible(m[1]+'/'+m[2]);
-      const nt=timeKey(m[3]);
+      const nt=timeKey(m[3]), end=timeKey(m[4]);
       if(!nt)continue;
+      const adjustedTime=end?nt+'-'+end:nt;
       out.push({
-        id:'INLINE-TIME-'+f.id+'-'+from+'-'+nt,
+        id:'INLINE-TIME-'+f.id+'-'+from+'-'+adjustedTime,
         fixedId:f.id,originalDate:from,originalTime:f.time,action:'改時間',
-        newDate:from,newTime:nt,student:f.student,course:f.course,teacher:f.teacher,
+        newDate:from,newTime:adjustedTime,newEndTime:end,student:f.student,course:f.course,teacher:f.teacher,
         site:f.site,note:'來源：固定課表備註；'+m[0],source:'固定課表備註'
       });
     }
