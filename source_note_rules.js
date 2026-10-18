@@ -103,8 +103,9 @@ function parseSameDayTimeChangeNote(value, year = new Date().getFullYear()) {
 // A plain "10/17師p" means the teacher is absent that date. Notes containing
 // "師p調..." are handled by the move parser first and must not become an extra cancellation.
 function parseTeacherAbsenceNote(value, year = new Date().getFullYear()) {
-  const source = String(value ?? '').trim();
-  const m = source.match(/(?:^|[^0-9])(\d{1,2})\/(\d{1,2})\s*師\s*p(?!\s*調)(?=$|[^a-z0-9])/i);
+  // Normalize wrapped teacher notes such as "(9/26老\\n師p)" before matching.
+  const source = String(value ?? '').replace(/\\s+/g, '');
+  const m = source.match(/(?:^|[^0-9])(\\d{1,2})\\/(\\d{1,2})(?:老師|師)\\s*p(?!\\s*調)(?=$|[^a-z0-9])/i);
   if (!m) return '';
   return parseMonthDay(m[1], m[2], year);
 }
