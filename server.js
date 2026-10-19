@@ -1595,6 +1595,168 @@ async function syncSourceIntoSchedule(){
   };
 }
 
+
+function shouldPreserveReminderConfirmation(oldValues, proposedValues, headers, includeMessage=true){
+  const h=hmap(headers);
+  const fields=['課程日期','上課時間','發送日期','發送時間','學生/學生成員','課程','老師','校區'];
+  if(includeMessage) fields.push('訊息內容');
+  return fields.every(name=>h[name]!==undefined&&str((oldValues||[])[h[name]])===str((proposedValues||[])[h[name]]));
+}
+
+function adjustmentConflictWarnings(adjustments){
+  const groups=new Map();
+  for(const a of adjustments||[]){
+    if(!a.originalDate||!a.originalTime||!str(a.student)) continue;
+    const key=[a.originalDate,compact(a.student),timeKey(a.originalTime)||str(a.originalTime)].join('|');
+    if(!groups.has(key)) groups.set(key,[]);
+    groups.get(key).push(a);
+  }
+  const warnings=[];
+  for(const [key,group] of groups){
+    if(group.length<2) continue;
+    const signatures=new Set(group.map(a=>[
+      norm(a.action),a.newDate||'',normalizeTimeRange(a.newTime)||str(a.newTime),
+      timeKey(a.newEndTime)||str(a.newEndTime),compact(a.course),compact(a.teacher),compact(a.site)
+    ].join('|')));
+    if(signatures.size<2) continue;
+    const [date,student,time]=key.split('|');
+    const ids=group.map(x=>str(x.id)||'(無 ID)').slice(0,4).join('、');
+    warnings.push('同一課程有 '+signatures.size+' 種不同調整：'+student+' '+date+' '+time+'；程式依既有優先序處理，其餘請人工核對。調課ID：'+ids);
+  }
+  return warnings.slice(0,20);
+}
+
+function fixedDataQualityWarnings(rows, referenceDate=todayKey()){
+  const hr=findHeaderRow(rows,['固定課表ID','星期','上課時間','學生','課程','老師','校區','有效迄日','啟用']);
+  if(hr<0) return ['固定課表缺少必要標題列，無法完整核對資料品質。'];
+  const h=hmap(rows[hr]);
+  const badEnabled=[],badWeekday=[],badTime=[],badUntil=[],missingStudent=[];
+  for(let i=hr+1;i<rows.length;i++){
+    const r=rows[i]||[],id=str(r[h['固定課表ID']]);
+    if(!id) continue;
+    const enabledRaw=str(r[h['啟用']]);
+    if(!isYes(enabledRaw)&&!isNo(enabledRaw)){badEnabled.push('列 '+(i+1)+'（'+id+'）');continue;}
+    if(!isYes(enabledRaw)) continue;
+    const weekday=normalizeWeekday(r[h['星期']]);
+    if(!['一','二','三','四','五','六','日'].includes(weekday)) badWeekday.push('列 '+(i+1)+'（'+id+'）');
+    const rawTime=str(r[h['上課時間']]),range=parseTimeRange(rawTime),start=range.start||timeKey(rawTime);
+    if(!start) badTime.push('列 '+(i+1)+'（'+id+'：'+(rawTime||'時間空白')+'）');
+    const untilRaw=r[h['有效迄日']];
+    if(str(untilRaw)&&!parseDateFlexible(untilRaw,referenceDate)) badUntil.push('列 '+(i+1)+'（'+id+'：'+str(untilRaw)+'）');
+    const student=str(r[h['學生']])||extractStudentFromTime(rawTime);
+    if(!student) missingStudent.push('列 '+(i+1)+'（'+id+'）');
+  }
+  const warnings=[];
+  if(badEnabled.length) warnings.push('固定課表有 '+badEnabled.length+' 筆「啟用」欄位不是明確的是／否；例：'+badEnabled.slice(0,5).join('、'));
+  if(badWeekday.length) warnings.push('固定課表有 '+badWeekday.length+' 筆星期無法判讀；例：'+badWeekday.slice(0,5).join('、'));
+  if(badTime.length) warnings.push('固定課表有 '+badTime.length+' 筆上課時間無法判讀；例：'+badTime.slice(0,5).join('、'));
+  if(badUntil.length) warnings.push('固定課表有 '+badUntil.length+' 筆有效迄日無法判讀；可能被當成沒有到期日。例：'+badUntil.slice(0,5).join('、'));
+  if(missingStudent.length) warnings.push('固定課表有 '+missingStudent.length+' 筆學生欄空白且無法從時間欄還原；例：'+missingStudent.slice(0,5).join('、'));
+  return warnings;
+}
+
+function actualIntegrityWarnings(actualRows){
+  const rows=actualRows||[];
+  const seen=new Map(),duplicateSamples=[],invalidDateSamples=[],invalidTimeSamples=[],inconsistentTimeSamples=[];
+  const studentIntervals=new Map(),teacherIntervals=new Map();
+  const minutes=value=>{const t=timeKey(value);if(!t)return -1;const [h,m]=t.split(':').map(Number);return h*60+m;};
+  const addInterval=(map,key,item)=>{if(!map.has(key))map.set(key,new Map());map.get(key).set(item.signature,item);};
+  for(const row of rows){
+    const date=dateKey(row?.[1]),range=parseTimeRange(row?.[3]);
+    const start=range.start||timeKey(row?.[13])||timeKey(row?.[3]);
+    const end=range.end||timeKey(row?.[14]);
+    const student=str(row?.[4]),course=str(row?.[5]),teacher=str(row?.[6]),site=normalizeSite(row?.[7]);
+    const label=[student,date,str(row?.[3]),course,teacher].filter(Boolean).join(' / ');
+    if(!isValidDateKey(date)) invalidDateSamples.push(label||'(空白課程)');
+    if(!start) invalidTimeSamples.push(label||'(空白課程)');
+    if(start&&end&&minutes(end)<=minutes(start)) invalidTimeSamples.push(label+'（下課時間不晚於上課時間）');
+    if(range.start&&start&&range.start!==start) inconsistentTimeSamples.push(label+'（上課時間與出勤開始時間不一致）');
+    if(range.end&&end&&range.end!==end) inconsistentTimeSamples.push(label+'（上課時間與出勤下課時間不一致）');
+    const duplicateKey=[date,start,end,compact(student),compact(course),compact(teacher),compact(site)].join('|');
+    if(isValidDateKey(date)&&start&&student){
+      if(seen.has(duplicateKey)){if(duplicateSamples.length<5)duplicateSamples.push(label);}
+      else seen.set(duplicateKey,label);
+    }
+    if(isValidDateKey(date)&&start&&end&&minutes(end)>minutes(start)){
+      const signature=[date,start,end,compact(student),compact(course),compact(teacher),compact(site)].join('|');
+      const item={date,start,end,startMinute:minutes(start),endMinute:minutes(end),student,teacher,signature};
+      if(student)addInterval(studentIntervals,date+'|'+compact(student),item);
+      if(teacher)addInterval(teacherIntervals,date+'|'+compact(teacher),{...item,signature:[date,start,end,compact(teacher),compact(course),compact(site)].join('|')});
+    }
+  }
+  const overlaps=(map,entity)=>{
+    let count=0;const samples=[];
+    for(const [groupKey,bySignature] of map){
+      const items=Array.from(bySignature.values()).sort((a,b)=>a.startMinute-b.startMinute||a.endMinute-b.endMinute);
+      for(let i=0;i<items.length;i++){
+        for(let j=i+1;j<items.length&&items[j].startMinute<items[i].endMinute;j++){
+          if(items[i].signature===items[j].signature)continue;
+          count++;
+          if(samples.length<5)samples.push(entity+'「'+(entity==='學生'?items[i].student:items[i].teacher)+'」'+items[i].date+'：'+items[i].start+'-'+items[i].end+' 與 '+items[j].start+'-'+items[j].end+' 重疊');
+        }
+      }
+    }
+    return {count,samples};
+  };
+  const studentOverlap=overlaps(studentIntervals,'學生'),teacherOverlap=overlaps(teacherIntervals,'老師');
+  const warnings=[];
+  if(duplicateSamples.length)warnings.push('實際課程疑似有重複列；例：'+duplicateSamples.join('；'));
+  if(invalidDateSamples.length)warnings.push('實際課程有 '+invalidDateSamples.length+' 筆日期無法判讀；例：'+invalidDateSamples.slice(0,3).join('；'));
+  if(invalidTimeSamples.length)warnings.push('實際課程有 '+invalidTimeSamples.length+' 筆時間無效或區間不合理；例：'+invalidTimeSamples.slice(0,3).join('；'));
+  if(inconsistentTimeSamples.length)warnings.push('實際課程時間欄與出勤時間欄有 '+inconsistentTimeSamples.length+' 筆不一致；例：'+inconsistentTimeSamples.slice(0,3).join('；'));
+  if(studentOverlap.count)warnings.push('實際課程有 '+studentOverlap.count+' 組學生上課時段重疊；例：'+studentOverlap.samples.join('；'));
+  if(teacherOverlap.count)warnings.push('實際課程有 '+teacherOverlap.count+' 組老師上課時段重疊；例：'+teacherOverlap.samples.join('；'));
+  return warnings;
+}
+
+function missingActualEndTimeWarnings(actualRows){
+  const missing=(actualRows||[]).filter(row=>!(parseTimeRange(row[3]).end||timeKey(row[14])));
+  if(!missing.length)return [];
+  return ['有 '+missing.length+' 筆實際課程缺少下課時間；例：'+missing.slice(0,5).map(row=>str(row[4])+' '+str(row[1])+' '+str(row[3])).join('、')];
+}
+
+function missingRecipientWarnings(actualRows, contacts, settings){
+  const actual=actualObjects(actualRows||[]);
+  const missingParents=new Map(),missingTeachers=new Map();
+  for(const c of actual){
+    if(c.adjustResult==='取消'||!str(c.student)||isUnavailableSlot(c.student))continue;
+    if(isYes(settings.parentNotify,true)){
+      const students=extractReminderStudentNames(c.student);
+      for(const name of (students.length?students:[c.student])){
+        const found=(contacts||[]).some(x=>x.role==='家長'&&includesStudent(x.related,name));
+        if(!found&&!missingParents.has(compact(name)))missingParents.set(compact(name),name+'（'+c.date+' '+c.time+'）');
+      }
+    }
+    if(isYes(settings.teacherNotify,true)){
+      const teacher=str(c.teacher);
+      const found=teacher&&(contacts||[]).some(x=>x.role==='老師'&&compact(x.related)===compact(teacher));
+      if(!found){
+        const display=teacher||'(老師欄空白)';
+        if(!missingTeachers.has(compact(display)))missingTeachers.set(compact(display),display+'（'+c.date+' '+c.time+'）');
+      }
+    }
+  }
+  const warnings=[];
+  if(missingParents.size)warnings.push('有 '+missingParents.size+' 位學生找不到已啟用且可匹配的家長 LINE 聯絡人，家長提醒不會建立；例：'+Array.from(missingParents.values()).slice(0,5).join('、'));
+  if(missingTeachers.size)warnings.push('有 '+missingTeachers.size+' 位老師找不到已啟用且可匹配的 LINE 聯絡人，老師提醒不會建立；例：'+Array.from(missingTeachers.values()).slice(0,5).join('、'));
+  return warnings;
+}
+
+function notificationTemplateWarnings(templates,settings){
+  const warnings=[];
+  if(isYes(settings.parentNotify,true)&&!(templates||[]).some(t=>t.name==='家長一般'&&str(t.content)))warnings.push('訊息模板缺少有效的「家長一般」模板；請確認提醒是否有非空白訊息。');
+  if(isYes(settings.teacherNotify,true)&&!(templates||[]).some(t=>t.name==='老師通知'&&str(t.content)))warnings.push('訊息模板缺少有效的「老師通知」模板；請確認提醒是否有非空白訊息。');
+  return warnings;
+}
+
+function adminAuthorized(req){
+  const expected=String(process.env.SCHEDULE_ADMIN_TOKEN||'');
+  if(!expected)return false;
+  const supplied=String((req&&req.get&&req.get('x-admin-token'))||req?.query?.token||'');
+  const a=Buffer.from(expected),b=Buffer.from(supplied);
+  return a.length===b.length&&require('crypto').timingSafeEqual(a,b);
+}
+
 async function build({fromDate=todayKey(),days=DEFAULT_DAYS}={}){
   if(!isValidDateKey(fromDate)) throw new Error('fromDate 必須是有效的 YYYY-MM-DD 日期');
   if(!Number.isInteger(days)||days<1||days>180) throw new Error('days 必須是 1 到 180 的整數');
