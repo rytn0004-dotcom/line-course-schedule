@@ -1280,30 +1280,67 @@ function columnLetter(n){
 
 // 每次手動呼叫 /build 時，先讀取「開學課表」並把尚未存在的固定課表／調課資料補入。
 // 安全原則：只新增來源中缺少的列，不刪除或覆寫現有列；既有人工資料保留。
-async function syncSourceIntoSchedule(){
+
+function dedupeRawFixedRows(rows){
+  const byKey=new Map(),unique=[],conflicts=[];
+  let suppressed=0;
+  const signature=x=>[
+    timeKey(x.time),timeKey(x.endTime),compact(normalizeMemberListForKey(x.student)),
+    compact(x.course),compact(x.teacher),compact(normalizeSite(x.site)),
+    x.untilDate||'',x.startsOn||'',x.colorStatus||''
+  ].join('|');
+  for(const x of rows||[]){
+    const key=rawFixedLogicalKey(x),sig=signature(x),previous=byKey.get(key);
+    if(!previous){byKey.set(key,{signature:sig,row:x});unique.push(x);continue;}
+    if(previous.signature===sig){suppressed++;continue;}
+    if(!conflicts.some(item=>item.key===key))conflicts.push({key,first:previous.row,conflicting:x});
+  }
+  return {rows:unique,suppressed,conflicts};
+}
+function normalizeMemberListForKey(value){
+  return normalizeStudentNameForContact(str(value).replace(/[、，,]/g,'、'));
+}
+
+async function syncSourceIntoSchedule(referenceDate=todayKey()){
   // 在「系統設定」新增可手動切換的「轉譯開學課表」；未設定時預設開啟。
   const settingsRead=await retry('read source translation setting',()=>sheets.spreadsheets.values.get({spreadsheetId:SHEET_ID,range:qsheet('系統設定')+'!A:Z'}));
   const settingsRows=settingsRead.data.values||[];
+  const settingsHeaderRow=findHeaderRow(settingsRows,['設定項目','目前值']);
+  if(settingsHeaderRow<0) throw new Error('來源同步停止：「系統設定」缺少「設定項目／目前值」標題；未修改來源課表。');
+  const settingsHeader=hmap(settingsRows[settingsHeaderRow]);
+  const settingNameColumn=settingsHeader['設定項目'], settingValueColumn=settingsHeader['目前值'];
   let translationRow=-1;
-  for(let i=0;i<settingsRows.length;i++){
-    if(str(settingsRows[i]?.[0])==='轉譯開學課表'){ translationRow=i+1; break; }
+  for(let i=settingsHeaderRow+1;i<settingsRows.length;i++){
+    if(str(settingsRows[i]?.[settingNameColumn])==='轉譯開學課表'){translationRow=i+1;break;}
   }
   let translateSource='是';
+  let pendingTranslationSetting=null;
   if(translationRow<0){
-    await retry('add source translation setting',()=>sheets.spreadsheets.values.append({spreadsheetId:SHEET_ID,range:qsheet('系統設定')+'!A:B',valueInputOption:'RAW',insertDataOption:'INSERT_ROWS',requestBody:{values:[['轉譯開學課表','是']]}}));
+    const width=Math.max((settingsRows[settingsHeaderRow]||[]).length,settingNameColumn+1,settingValueColumn+1);
+    const values=new Array(width).fill('');
+    values[settingNameColumn]='轉譯開學課表';
+    values[settingValueColumn]='是';
+    pendingTranslationSetting={rowNumber:settingsRows.length+1,values,width};
   }else{
-    translateSource=str(settingsRows[translationRow-1]?.[1]) || '是';
+    translateSource=str(settingsRows[translationRow-1]?.[settingValueColumn]) || '是';
   }
   if(!['是','yes','true','1','啟用'].includes(norm(translateSource))){
     return {sourceSheet:'開學課表',translationEnabled:false,sourceFixedParsed:0,sourceAdjustmentsParsed:0,fixedAdded:0,fixedCorrected:0,adjustmentsAdded:0,existingRowsPreserved:true,skipped:true};
   }
-  const year=Number(todayKey().slice(0,4));
+  const year=Number(String(referenceDate).slice(0,4))||Number(todayKey().slice(0,4));
   const {rawRows,fixedRows,adjustRows,themeColors}=await readRawSourcePreview();
   const parsed=parseRawSchedule(rawRows,year,themeColors);
-  const fixedHeaderRow=findHeaderRow(fixedRows,['固定課表ID','星期','上課時間','學生','課程','老師','校區','有效迄日','啟用']);
-  if(fixedHeaderRow<0) throw new Error('來源同步停止：固定課表欄位不正確，沒有寫入任何資料。');
-  const adjustHeaderRow=findHeaderRow(adjustRows,['調課ID','原固定課表ID','原日期','原時間','動作','新日期','新時間','學生','確認']);
-  if(adjustHeaderRow<0) throw new Error('來源同步停止：調課課程欄位不正確；尚未寫入固定課表或調課資料。');
+  const sourceFixedParsedCount=parsed.fixed.length;
+  const fixedDedup=dedupeRawFixedRows(parsed.fixed);
+  if(fixedDedup.conflicts.length){
+    const examples=fixedDedup.conflicts.slice(0,3).map(c=>[c.first.weekday,c.first.time+'-'+c.first.endTime,c.first.student,c.first.teacher].filter(Boolean).join(' ')+'（同一識別鍵的課程時段／科目／校區／有效期不一致）').join('；');
+    throw new Error('來源課表有 '+fixedDedup.conflicts.length+' 組固定課程使用相同識別鍵但資訊不一致；為避免同一固定課表 ID 覆寫，已停止來源同步。例：'+examples);
+  }
+  parsed.fixed=fixedDedup.rows;
+  const fixedHeaderRow=findHeaderRow(fixedRows,['固定課表ID','星期','上課時間','學生','課程','老師','校區','有效迄日','啟用','備註','通知模板']);
+  if(fixedHeaderRow<0) throw new Error('來源同步停止：固定課表缺少必要欄位（包含備註、通知模板）；沒有寫入資料。');
+  const adjustHeaderRow=findHeaderRow(adjustRows,['調課ID','原固定課表ID','原日期','原時間','動作','新日期','新時間','學生','新課程','新老師','新校區','確認','備註']);
+  if(adjustHeaderRow<0) throw new Error('來源同步停止：調課課程缺少必要欄位（包含新課程、新老師、新校區、備註）；尚未寫入資料。');
   const fixedHeaders=(fixedRows[fixedHeaderRow]||[]).map(str);
   const fh=hmap(fixedHeaders);
   const existingFixedIds=new Set();
@@ -2328,7 +2365,7 @@ function rawFixedLogicalKey(x){
   if(group){course=course||group[1];student=group[2];}
   const normalizedStudent=normalizeStudentNameForContact(student);
   const groupCourse=/團班/.test(course)?course:'';
-  return [norm(x.weekday),start,compact(groupCourse),compact(normalizedStudent),compact(stripScheduleAnnotation(x.teacher))].join('|');
+  return [normalizeWeekday(x.weekday),start,compact(groupCourse),compact(normalizedStudent),compact(stripScheduleAnnotation(x.teacher))].join('|');
 }
 
 function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {}){
