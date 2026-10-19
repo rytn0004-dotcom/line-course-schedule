@@ -288,7 +288,7 @@ function parseFixed(rows){
     const startsOn=explicitStart&&isValidDateKey(explicitStart[1])
       ? explicitStart[1]
       : parseCourseStartDateNote(note,parseYear);
-    out.push({id,weekday,time,endTime:range.end,student,course:str(r[h['課程']]),teacher:str(r[h['老師']]),site:normalizeSite(r[h['校區']]),until:dateKey(r[h['有效迄日']]),startsOn,template:str(r[h['通知模板']]),note,rawTime});
+    out.push({id,weekday,time,endTime:range.end,student,course:str(r[h['課程']]),teacher:str(r[h['老師']]),site:normalizeSite(r[h['校區']]),until:parseDateFlexible(r[h['有效迄日']],parseYear),startsOn,template:str(r[h['通知模板']]),note,rawTime});
   }
   if(enabledIssues.length){
     console.warn('[SCHEDULE-DATA-CHECK] 固定課表「啟用」欄位不是「是／否」', enabledIssues);
@@ -1100,7 +1100,7 @@ function makeReminderRows(actual, contacts, templates, settings, fixedTemplateBy
           '謝謝！'
         ].join('\n');
       }
-    }else{
+    }else if(x.template){
       content=safeReplaceTemplate(x.template,{
         學生:x.members || x.student,
         日期:x.dateLabel,
@@ -1111,6 +1111,15 @@ function makeReminderRows(actual, contacts, templates, settings, fixedTemplateBy
         校區:x.site,
         學生成員:x.members || x.student
       });
+    }else{
+      content=[
+        (x.members||x.student)+' 家長您好，提醒您以下課程：',
+        '日期：'+x.dateLabel+'（週'+weekdayLabel(x.date)+'）',
+        '時間：'+(x.timeRange||x.time),
+        '課程：'+(x.course||'課程'),
+        '老師：'+(x.teacher||'待確認'),
+        '校區：'+(x.site||'待確認')
+      ].join('\n');
     }
     return {
       key:id+'|'+x.role+'|'+x.recipient,
@@ -2864,5 +2873,6 @@ module.exports={
   parseReminderRows,mergeReminderItems,makeReminderRows,shouldPreserveReminderConfirmation,
   adjustmentConflictWarnings,fixedDataQualityWarnings,actualIntegrityWarnings,missingActualEndTimeWarnings,
   missingRecipientWarnings,notificationTemplateWarnings,missingReminderTimeWarnings,
+  unavailableSlotWarnings,parseRawSchedule,rawFixedLogicalKey,
   dedupeRawFixedRows:typeof dedupeRawFixedRows==='function'?dedupeRawFixedRows:undefined
 };
