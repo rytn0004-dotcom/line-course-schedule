@@ -200,9 +200,11 @@ test('yellow font on line breaks does not disable adjacent black lessons', () =>
     // while the only explicit yellow run is the newline separator.
     effectiveFormat: { textFormat: { foregroundColor: yellow } },
     textFormatRuns: [
-      { startIndex: 0, format: {} },
+      // Match the uploaded workbook: course text is explicitly black,
+      // while only newline separators may carry yellow formatting.
+      { startIndex: 0, format: { foregroundColor: black } },
       { startIndex: 11, format: { foregroundColor: yellow } },
-      { startIndex: 12, format: {} }
+      { startIndex: 12, format: { foregroundColor: black } }
     ]
   };
   const parsed = parseRawSchedule([['老師', '星期一'], ['吳佳盈', cell]], 2026, {});
