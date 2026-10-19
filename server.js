@@ -49,6 +49,14 @@ const REMINDER_HEADERS = ['提醒ID','課程日期','上課時間','發送日期
 const DEFAULT_SITE = '愛學館信義光復校';
 const CORRECTION_HEADERS = ['日期','學生','原時間','校正動作','新時間','新課程','新老師','備註'];
 function normValue(v){ return String(v ?? '').trim().toLowerCase(); }
+function isYes(v, whenBlank=false){
+  const value=normValue(v);
+  if(!value) return whenBlank;
+  return ['是','yes','true','1','啟用','y'].includes(value);
+}
+function isNo(v){
+  return ['否','no','false','0','停用','n'].includes(normValue(v));
+}
 
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 function retryable(e){
