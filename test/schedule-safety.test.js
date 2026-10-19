@@ -191,6 +191,36 @@ test('source schedule scanner separates blocked slots from empty available slots
   assert.match(warnings[0], /禁排時段 14:00-18:45/);
 });
 
+test('yellow font on line breaks does not disable adjacent black lessons', () => {
+  const yellow = { red: 1, green: 1, blue: 0 };
+  const black = { red: 0, green: 0, blue: 0 };
+  const cell = {
+    value: '1830-2000珮瑜\\n2000-2130彥銘',
+    // Mimic a rich-text cell whose cell-level effective color is yellow,
+    // while the only explicit yellow run is the newline separator.
+    effectiveFormat: { textFormat: { foregroundColor: yellow } },
+    textFormatRuns: [
+      { startIndex: 0, format: {} },
+      { startIndex: 11, format: { foregroundColor: yellow } },
+      { startIndex: 12, format: {} }
+    ]
+  };
+  const parsed = parseRawSchedule([['老師', '星期一'], ['吳佳盈', cell]], 2026, {});
+  assert.deepEqual(parsed.fixed.map(item => item.student), ['珮瑜', '彥銘']);
+  assert.ok(parsed.fixed.every(item => item.colorStatus !== 'yellow'));
+
+  // Actual yellow font on the course itself must still be recognized.
+  const actualYellow = {
+    value: '1830-2000珮瑜',
+    effectiveFormat: { textFormat: { foregroundColor: black } },
+    textFormatRuns: [{ startIndex: 0, format: { foregroundColor: yellow } }]
+  };
+  const yellowParsed = parseRawSchedule(
+    [['老師', '星期一'], ['吳佳盈', actualYellow]], 2026, {}
+  );
+  assert.equal(yellowParsed.fixed[0].colorStatus, 'yellow');
+});
+
 test('source scanner warns on an untimed availability note without presuming all-day closure', () => {
   const parsed = parseRawSchedule([
     ['老師', '星期三'],
