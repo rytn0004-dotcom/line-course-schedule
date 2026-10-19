@@ -195,7 +195,7 @@ test('yellow font on line breaks does not disable adjacent black lessons', () =>
   const yellow = { red: 1, green: 1, blue: 0 };
   const black = { red: 0, green: 0, blue: 0 };
   const cell = {
-    value: '1830-2000珮瑜\\n2000-2130彥銘',
+    value: '1830-2000珮瑜\n2000-2130彥銘',
     // Mimic a rich-text cell whose cell-level effective color is yellow,
     // while the only explicit yellow run is the newline separator.
     effectiveFormat: { textFormat: { foregroundColor: yellow } },
