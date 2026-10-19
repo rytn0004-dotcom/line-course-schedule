@@ -1766,6 +1766,42 @@ function adminAuthorized(req){
   return a.length===b.length&&require('crypto').timingSafeEqual(a,b);
 }
 
+
+function missingReminderTimeWarnings(actualRows, contacts, settings){
+  if(!AUTO_CREATE_REMINDERS||!isYes(settings.enabled)) return [];
+  const missingByDay=new Map();
+  const add=(day,key)=>{
+    if(!missingByDay.has(day))missingByDay.set(day,new Set());
+    missingByDay.get(day).add(key);
+  };
+  const actual=actualObjects(actualRows||[]);
+  const allStudentNames=actual.map(x=>x.student);
+  for(const c of actual){
+    if(c.adjustResult==='取消'||!c.student||isUnavailableSlot(c.student))continue;
+    const slot=previousReminderSlot(c.date,settings);
+    if(slot.sendTime)continue;
+    const day=weekdayLabel(slot.sendDate);
+    if(isYes(settings.parentNotify,true)){
+      const names=extractReminderStudentNames(c.student);
+      for(const name of (names.length?names:[c.student])){
+        for(const person of (contacts||[]).filter(x=>x.role==='家長'&&includesStudent(x.related,name))){
+          add(day,['家長',compact(person.name),c.date,c.time,compact(c.teacher),compact(c.site)].join('|'));
+        }
+      }
+    }
+    if(isYes(settings.teacherNotify,true)){
+      for(const person of (contacts||[]).filter(x=>x.role==='老師'&&compact(x.related)===compact(c.teacher))){
+        add(day,['老師',compact(person.name),c.date,c.time,compact(c.teacher),compact(c.site)].join('|'));
+      }
+    }
+  }
+  const warnings=[];
+  for(const [day,items] of missingByDay){
+    warnings.push('系統設定缺少週'+day+'發送時間，影響 '+items.size+' 筆提醒；不會自動猜測發送時間。');
+  }
+  return warnings;
+}
+
 async function build({fromDate=todayKey(),days=DEFAULT_DAYS}={}){
   if(!isValidDateKey(fromDate)) throw new Error('fromDate 必須是有效的 YYYY-MM-DD 日期');
   if(!Number.isInteger(days)||days<1||days>180) throw new Error('days 必須是 1 到 180 的整數');
