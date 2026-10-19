@@ -449,7 +449,7 @@ test('one-time moved lesson with +45min becomes a single extended make-up instea
 test('duration annotation and leave annotation in the same source row stay separate', () => {
   const parsed = parseRawSchedule([
     ['老師', '星期六'],
-    ['朱蕙蓮', { value: '1100-1230興宸\\n1100-1230興宸(10/3加時一次30min)(10/10p)' }]
+    ['朱蕙蓮', { value: '1100-1230興宸\n1100-1230興宸(10/3加時一次30min)(10/10p)' }]
   ], 2026, {}, '2026-10-17');
 
   const extensions = parsed.adjustments.filter(x => x.action === '延長時間' && x.student === '興宸');
@@ -463,7 +463,7 @@ test('duration annotation and leave annotation in the same source row stay separ
 test('student-suffix extension does not extend a date explicitly marked as absence', () => {
   const parsed = parseRawSchedule([
     ['老師', '星期二'],
-    ['黃彥嘉', { value: '1830-2000芯瑜\\n1830-2030芯瑜+30min(9/15、9/22、9/29、10/13、10/20、10/27)(9/8p)' }]
+    ['黃彥嘉', { value: '1830-2000芯瑜\n1830-2030芯瑜+30min(9/15、9/22、9/29、10/13、10/20、10/27)(9/8p)' }]
   ], 2026, {}, '2026-10-17');
 
   const extensions = parsed.adjustments.filter(x => x.action === '延長時間' && x.student === '芯瑜');
@@ -478,7 +478,7 @@ test('student-suffix extension does not extend a date explicitly marked as absen
 test('untimed teacher unavailability notes are reported for manual interpretation, never presumed all-day closure', () => {
   const parsed = parseRawSchedule([
     ['老師', '星期三'],
-    ['吳佳盈\\n近期無法排課寵物回診', { value: '1800-1930學生甲' }]
+    ['吳佳盈', { value: '近期無法排課寵物回診' }, { value: '1800-1930學生甲' }]
   ], 2026, {}, '2026-10-17');
   assert.equal(parsed.unavailableSlots.length, 1);
   assert.equal(parsed.unavailableSlots[0].allDayOrUnspecified, true);
