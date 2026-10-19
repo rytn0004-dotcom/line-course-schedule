@@ -76,6 +76,12 @@ function qsheet(name){ return `'${String(name).replace(/'/g,"''")}'`; }
 function str(v){ return String(v ?? '').trim(); }
 function normalizeSite(v){ return str(v) || DEFAULT_SITE; }
 function norm(v){ return str(v).replace(/\s+/g,''); }
+function normalizeWeekday(value){
+  const raw=norm(value).replace(/^(?:星期|週|周)/,'');
+  const map={'1':'一','2':'二','3':'三','4':'四','5':'五','6':'六','7':'日',
+    '一':'一','二':'二','三':'三','四':'四','五':'五','六':'六','日':'日'};
+  return map[raw]||raw;
+}
 function split(v){ return str(v).split(/[、,，\/]/).map(s=>s.trim()).filter(Boolean); }
 function normHeader(v){
   return str(v)
@@ -136,8 +142,17 @@ function parseDateFlexible(v, fallbackYear=new Date().toLocaleString('en-US',{ti
   const x=str(v);
   const short=x.match(/^(\d{1,2})[\/\.\-](\d{1,2})$/);
   if(short){
-    const key=String(fallbackYear)+'-'+String(+short[1]).padStart(2,'0')+'-'+String(+short[2]).padStart(2,'0');
-    return isValidDateKey(key)?key:'';
+    const suppliedReference=isValidDateKey(String(fallbackYear))?String(fallbackYear):'';
+    const requestedYear=Number(String(fallbackYear).slice(0,4));
+    const baseYear=Number.isFinite(requestedYear)&&requestedYear>=1900?requestedYear:Number(todayKey().slice(0,4));
+    const reference=suppliedReference || (baseYear===Number(todayKey().slice(0,4))?todayKey():String(baseYear)+'-07-01');
+    const makeKey=y=>String(y)+'-'+String(Number(short[1])).padStart(2,'0')+'-'+String(Number(short[2])).padStart(2,'0');
+    const candidates=[baseYear-1,baseYear,baseYear+1].map(makeKey).filter(isValidDateKey);
+    if(!candidates.length) return '';
+    const distance=(a,b)=>Math.abs(Date.parse(a+'T00:00:00Z')-Date.parse(b+'T00:00:00Z'));
+    candidates.sort((a,b)=>distance(a,reference)-distance(b,reference)||
+      Math.abs(Number(a.slice(0,4))-baseYear)-Math.abs(Number(b.slice(0,4))-baseYear));
+    return candidates[0];
   }
   const full=dateKey(x);
   return isValidDateKey(full)?full:'';
@@ -225,14 +240,18 @@ async function readSheets(){
 
 function parseSettings(rows){
   const hr=findHeaderRow(rows,['設定項目','目前值']);
-  if(hr<0) return {};
+  if(hr<0) throw new Error('「系統設定」缺少「設定項目／目前值」標題；已中止建置，以免把欄位錯誤當成提醒停用。');
   const h=hmap(rows[hr]); const out={};
   for(let i=hr+1;i<rows.length;i++){
     const r=rows[i]||[]; const key=str(r[h['設定項目']]); if(!key) continue;
     out[key]=str(r[h['目前值']]);
   }
+  const reminderEnabled=str(out['課程提醒啟用']);
+  if(!reminderEnabled || (!isYes(reminderEnabled)&&!isNo(reminderEnabled))){
+    throw new Error('「系統設定」缺少有效的「課程提醒啟用」值；請明確填寫「是」或「否」，已中止建置。');
+  }
   return {
-    enabled:str(out['課程提醒啟用']) || '否',
+    enabled:reminderEnabled,
     parentNotify:str(out['家長通知']) || '是',
     teacherNotify:str(out['老師通知']) || '是',
     requireConfirm:str(out['發送前需確認']) || '是',
@@ -251,7 +270,7 @@ function parseFixed(rows){
   const h=hmap(rows[hr]), out=[];
   const parseYear=Number(todayKey().slice(0,4));
   const enabledIssues=[];
-  const teacherDiagnostics=[];
+  
   for(let i=hr+1;i<rows.length;i++){
     const r=rows[i]||[]; const id=str(r[h['固定課表ID']]); if(!id) continue;
     const enabledRaw=str(r[h['啟用']]);
@@ -259,12 +278,8 @@ function parseFixed(rows){
     if(enabled!=='是' && enabled!=='否'){
       enabledIssues.push({row:i+1,id,student:str(r[h['學生']]),teacher:str(r[h['老師']]),enabledRaw});
     }
-    const teacherRaw=str(r[h['老師']]);
-    if(teacherRaw && /陳少禹|少禹/.test(teacherRaw)){
-      teacherDiagnostics.push({row:i+1,id,student:str(r[h['學生']]),teacher:teacherRaw,enabled:enabledRaw,weekday:str(r[h['星期']]),rawTime:str(r[h['上課時間']]),course:str(r[h['課程']]),site:str(r[h['校區']]),until:str(r[h['有效迄日']])});
-    }
     if(enabled!=='是') continue;
-    const weekday=norm(r[h['星期']]); const rawTime=str(r[h['上課時間']]); const range=parseTimeRange(rawTime); const time=range.start||timeKey(rawTime);
+    const weekday=normalizeWeekday(r[h['星期']]); const rawTime=str(r[h['上課時間']]); const range=parseTimeRange(rawTime); const time=range.start||timeKey(rawTime);
     if(!weekday||!time) continue;
     const student=str(r[h['學生']])||extractStudentFromTime(rawTime);
     if(!student || isUnavailableSlot(student)) continue;
@@ -275,22 +290,8 @@ function parseFixed(rows){
       : parseCourseStartDateNote(note,parseYear);
     out.push({id,weekday,time,endTime:range.end,student,course:str(r[h['課程']]),teacher:str(r[h['老師']]),site:normalizeSite(r[h['校區']]),until:dateKey(r[h['有效迄日']]),startsOn,template:str(r[h['通知模板']]),note,rawTime});
   }
-  // 診斷指定學生為何沒有進入「實際課程」。只記錄少禹相關資料，不改變既有排課結果。
-  const diagnosticStudents=['陳少禹','少禹'];
-  for(const target of diagnosticStudents){
-    const matched=out.filter(f=>compact(f.student)===compact(target));
-    if(matched.length){
-      console.log('[SCHEDULE-DIAG] 固定課表找到學生', target, matched.map(f=>({
-        id:f.id, weekday:f.weekday, rawTime:f.rawTime, time:f.time, endTime:f.endTime,
-        course:f.course, teacher:f.teacher, site:f.site, until:f.until, enabled:'是', note:f.note
-      })));
-    }
-  }
   if(enabledIssues.length){
     console.warn('[SCHEDULE-DATA-CHECK] 固定課表「啟用」欄位不是「是／否」', enabledIssues);
-  }
-  if(teacherDiagnostics.length){
-    console.log('[SCHEDULE-DATA-CHECK] 固定課表找到老師「陳少禹」', teacherDiagnostics);
   }
   return out;
 }
@@ -649,7 +650,7 @@ function buildRows(fixed, adjusts, fromDate, days){
       if(!str(f.student) || isUnavailableSlot(f.student)) continue;
       if(f.startsOn&&isValidDateKey(f.startsOn)&&d<f.startsOn)continue;
       if(f.until&&/^\d{4}-\d{2}-\d{2}$/.test(f.until)&&d>f.until)continue;
-      if(norm(f.weekday)!==norm(wd))continue;
+      if(normalizeWeekday(f.weekday)!==normalizeWeekday(wd))continue;
       // If this date has an explicit cross-date move that resolves to the same
       // student and start time, the date-scoped destination lesson replaces the
       // weekly slot instead of generating overlapping 18:00-19:30 and 18:00-20:00 rows.
