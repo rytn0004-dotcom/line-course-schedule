@@ -1688,6 +1688,41 @@ function adjustmentConflictWarnings(adjustments){
   return warnings.slice(0,20);
 }
 
+function unavailableSlotWarnings(actualRows, unavailableSlots){
+  const rows=actualRows||[],slots=unavailableSlots||[];
+  if(!slots.length)return [];
+  const unspecified=slots.filter(x=>x.allDayOrUnspecified);
+  const minutes=value=>{const t=timeKey(value);if(!t)return -1;const [h,m]=t.split(':').map(Number);return h*60+m;};
+  const matches=new Map();
+  for(const row of rows){
+    const date=dateKey(row?.[1]),weekday=normalizeWeekday(row?.[2]),range=parseTimeRange(row?.[3]);
+    const start=range.start||timeKey(row?.[13])||timeKey(row?.[3]);
+    const end=range.end||timeKey(row?.[14]);
+    const teacher=compact(row?.[6]),student=str(row?.[4]);
+    if(!isValidDateKey(date)||!start||!end||!teacher)continue;
+    const startMinute=minutes(start),endMinute=minutes(end);
+    if(startMinute<0||endMinute<=startMinute)continue;
+    for(const slot of slots){
+      if(slot.allDayOrUnspecified||compact(slot.teacher)!==teacher||normalizeWeekday(slot.weekday)!==weekday)continue;
+      const blockedStart=minutes(slot.start),blockedEnd=minutes(slot.end);
+      if(blockedStart<0||blockedEnd<=blockedStart)continue;
+      if(startMinute<blockedEnd&&blockedStart<endMinute){
+        const key=[teacher,date,start,end,slot.start,slot.end,compact(student)].join('|');
+        if(!matches.has(key))matches.set(key,{teacher:str(row[6]),student,date,start,end,blockedStart:slot.start,blockedEnd:slot.end,sourceRow:slot.sourceRow});
+      }
+    }
+  }
+  const warnings=[];
+  if(matches.size){
+    const samples=Array.from(matches.values()).slice(0,8).map(x=>x.teacher+'／'+x.student+' '+x.date+' '+x.start+'-'+x.end+' 與來源禁排時段 '+x.blockedStart+'-'+x.blockedEnd+' 重疊（來源列 '+x.sourceRow+'）');
+    warnings.push('實際課程有 '+matches.size+' 筆與「無法排課／禁排」時段重疊；請檢查調課或固定課程。例：'+samples.join('；'));
+  }
+  if(unspecified.length){
+    warnings.push('來源課表有 '+unspecified.length+' 筆未指定日期／時段的「無法排課」備註，請人工確認；程式不會自行推定為整日停課。例：'+unspecified.slice(0,5).map(x=>x.teacher+'／'+(x.weekday?'星期'+x.weekday+'／':'')+x.note).join('；'));
+  }
+  return warnings;
+}
+
 function fixedDataQualityWarnings(rows, referenceDate=todayKey()){
   const hr=findHeaderRow(rows,['固定課表ID','星期','上課時間','學生','課程','老師','校區','有效迄日','啟用']);
   if(hr<0) return ['固定課表缺少必要標題列，無法完整核對資料品質。'];
@@ -1905,6 +1940,7 @@ async function build({fromDate=todayKey(),days=DEFAULT_DAYS}={}){
     ...fixedDataQualityWarnings(fixedRows,fromDate),
     ...adjustmentConflictWarnings(adjusts),
     ...actualIntegrityWarnings(actual),
+    ...unavailableSlotWarnings(actual,sourceSync.unavailableSlots||[]),
     ...missingRecipientWarnings(actual,contacts,settings),
     ...notificationTemplateWarnings(templates,settings),
     ...missingReminderTimeWarnings(actual,contacts,settings),
@@ -2400,7 +2436,7 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
     throw new Error('「開學課表」格式不符合目前預期：需要老師欄及星期欄位；目前讀到：'+(seenHeader||'空白標題列'));
   }
 
-  const fixed=[],adjustments=[],redItems=[],unclassifiedItems=[],durationRows=[];
+  const fixed=[],adjustments=[],redItems=[],unclassifiedItems=[],durationRows=[],unavailableSlots=[],openSlots=[];
   const isEarlier=(a,b)=>!a?b:!b?a:a<b?a:b;
   const oneOffDateList=(annotations)=>{
     const output=[],seen=new Set();
@@ -2442,6 +2478,24 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
 
     for(const [col,weekday] of Object.entries(weekdayCols)){
       const cellText=rawCellText(row[Number(col)]);
+      for(const rawLine of cellText.split(/\r?\n/).map(str).filter(Boolean)){
+        const line=rawLine.trim();
+        const timeMatch=line.match(/^(\d{1,2}:?\d{2})\s*[-~～至]\s*(\d{1,2}:?\d{2})\s*(.*)$/);
+        if(timeMatch){
+          const start=timeKey(timeMatch[1]),end=timeKey(timeMatch[2]),remainder=str(timeMatch[3]);
+          if(start&&end&&/(?:無法排課|不能排課|不可排課|無法安排|休息時段)/i.test(remainder)){
+            unavailableSlots.push({teacher,weekday,start,end,note:remainder,raw:line,sourceRow:r+1});
+          }else if(!start||!end){
+            unclassifiedItems.push({teacher,weekday,time:line,student:'',raw:line,colorStatus:'unknown',note:'[無法判讀的來源時段] 時間格式無效'});
+          }else if(!remainder){
+            openSlots.push({teacher,weekday,start,end,raw:line,sourceRow:r+1});
+          }
+        }else if(/(?:近期)?(?:無法排課|不能排課|不可排課|無法安排|休息時段)/i.test(line)){
+          unavailableSlots.push({teacher,weekday,start:'',end:'',note:line,raw:line,sourceRow:r+1,allDayOrUnspecified:true});
+        }else if(/^\d{3,4}/.test(line)){
+          unclassifiedItems.push({teacher,weekday,time:'',student:line,raw:line,colorStatus:'unknown',note:'[無法判讀的來源時段] 以數字開頭但缺少有效時間區間'});
+        }
+      }
       for(const rawItem of parseRawCourseCell(row[Number(col)],teacher,weekday,year,themeColors)){
         const item={
           ...rawItem,
@@ -2613,7 +2667,7 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
       deduped[oldIndex]=winner;
     }
   }
-  return {fixed,adjustments:deduped,redItems,unclassifiedItems};
+  return {fixed,adjustments:deduped,redItems,unclassifiedItems,unavailableSlots,openSlots};
 }
 
 function matchRawFixedIds(rawFixed, existingFixedRows){
