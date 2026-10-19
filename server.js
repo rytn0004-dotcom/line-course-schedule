@@ -1883,6 +1883,9 @@ async function buildOnce(options){
 }
 
 app.get('/build',async(req,res)=>{
+  if(!process.env.SCHEDULE_ADMIN_TOKEN) return res.status(503).json({status:'error',error:'管理端尚未設定 SCHEDULE_ADMIN_TOKEN，已拒絕建置。'});
+  if(!adminAuthorized(req)) return res.status(401).json({status:'error',error:'管理端驗證失敗。'});
+  if(buildInProgress) return res.status(409).json({status:'error',error:'目前已有另一個課表建置正在執行；本次請求未執行。'});
   try{
     const fromDate=req.query.from || todayKey();
     const days=Math.min(180,Math.max(1,Number(req.query.days||DEFAULT_DAYS)));
@@ -2725,6 +2728,8 @@ async function buildSourcePreview(year = new Date().getFullYear()){
 }
 
 app.get('/preview-source',async(req,res)=>{
+  if(!process.env.SCHEDULE_ADMIN_TOKEN) return res.status(503).json({ok:false,mode:'preview-only',writesPerformed:false,error:'管理端尚未設定 SCHEDULE_ADMIN_TOKEN。'});
+  if(!adminAuthorized(req)) return res.status(401).json({ok:false,mode:'preview-only',writesPerformed:false,error:'管理端驗證失敗。'});
   try{
     const year=Number(req.query.year||new Date().getFullYear());
     res.json(await buildSourcePreview(year));
@@ -2734,8 +2739,15 @@ app.get('/preview-source',async(req,res)=>{
   }
 });
 
-
-
-app.listen(PORT,()=>console.log(`LINE Course Schedule Manager v1.2 listening on ${PORT}`));
 // Safety: do not build or write Google Sheets automatically at startup or on a timer.
-// Use the explicit /build endpoint only after reviewing the source preview.
+if(require.main===module){
+  app.listen(PORT,()=>console.log(`LINE Course Schedule Manager v1.2 listening on ${PORT}`));
+}
+module.exports={
+  app,isYes,isNo,adminAuthorized,parseDateFlexible,normalizeWeekday,parseSettings,parseFixed,
+  parseAdjust,parseInlineAdjustments,buildRows,mergeActualRows,actualObjects,parseContacts,parseTemplates,
+  parseReminderRows,mergeReminderItems,makeReminderRows,shouldPreserveReminderConfirmation,
+  adjustmentConflictWarnings,fixedDataQualityWarnings,actualIntegrityWarnings,missingActualEndTimeWarnings,
+  missingRecipientWarnings,notificationTemplateWarnings,missingReminderTimeWarnings,
+  dedupeRawFixedRows:typeof dedupeRawFixedRows==='function'?dedupeRawFixedRows:undefined
+};
