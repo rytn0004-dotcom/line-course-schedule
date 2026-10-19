@@ -39,6 +39,14 @@ lineme-service
         ↓
 LINE Push
 
+## 管理端 API 安全設定
+
+`/build` 會寫入「實際課程」與「課程提醒」；`/preview-source` 會回傳學生、老師及課表內容。兩個端點都要求設定環境變數 `SCHEDULE_ADMIN_TOKEN` 並通過驗證。
+
+在 Render 的 **Environment** 新增 `SCHEDULE_ADMIN_TOKEN`，設定一組長且不重複的隨機字串。呼叫 API 時優先使用 `x-admin-token` HTTP 標頭。僅供瀏覽器手動測試的 `?token=` 查詢參數可能留在瀏覽器歷史與伺服器紀錄，不要分享含 token 的網址。未設定 token 時，管理端點會回傳 503；驗證失敗回傳 401。公開的 `/health` 不需要 token。
+
+正式環境請勿直接用 `/build` 做測試；先用獨立 Render 測試服務，並讓測試服務連到試算表副本。
+
 ## /build
 
 GET /build?from=2026-09-16&days=1

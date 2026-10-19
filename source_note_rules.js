@@ -334,5 +334,6 @@ module.exports = {
   parseTeacherAbsenceNote,
   parseSingleDateOnlyNote,
   parseTeacherConfirmUntil,
+  normalizeStudentNameForContact,
   timeKey
 };

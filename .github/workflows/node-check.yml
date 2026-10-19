@@ -2,7 +2,7 @@ name: Node syntax and parser tests
 
 on:
   push:
-    branches: [main]
+    branches: ['**']
   pull_request:
     branches: [main]
 
@@ -14,6 +14,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - name: Install dependencies
+        run: npm install
       - name: Check server syntax
         run: node --check server.js
       - name: Check pure parsing rules syntax
