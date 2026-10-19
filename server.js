@@ -1651,6 +1651,10 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
     redCancelled:parsed.redItems.length,
     unclassifiedCount:parsed.unclassifiedItems.length,
     unclassifiedSamples:parsed.unclassifiedItems.slice(0,5).map(x=>({teacher:x.teacher,weekday:x.weekday,time:x.time,student:x.student,note:x.note})),
+    unavailableSlotsCount:(parsed.unavailableSlots||[]).length,
+    unavailableSlots:parsed.unavailableSlots||[],
+    openSlotsCount:(parsed.openSlots||[]).length,
+    openSlots:parsed.openSlots||[],
     warnings,
     existingRowsPreserved:true,
     translationEnabled:true
@@ -2830,7 +2834,11 @@ async function buildSourcePreview(year = new Date().getFullYear()){
     fixed:fixed.slice(0,300).map(previewSafe),
     adjustments:adjustments.slice(0,300).map(previewSafe),
     redItems:parsed.redItems.slice(0,200).map(previewSafe),
-    unclassifiedItems:parsed.unclassifiedItems.slice(0,200).map(previewSafe)
+    unclassifiedItems:parsed.unclassifiedItems.slice(0,200).map(previewSafe),
+    unavailableSlotsCount:(parsed.unavailableSlots||[]).length,
+    unavailableSlots:(parsed.unavailableSlots||[]).slice(0,200).map(previewSafe),
+    openSlotsCount:(parsed.openSlots||[]).length,
+    openSlots:(parsed.openSlots||[]).slice(0,200).map(previewSafe)
   };
 }
 
