@@ -1769,31 +1769,74 @@ function adminAuthorized(req){
 async function build({fromDate=todayKey(),days=DEFAULT_DAYS}={}){
   if(!isValidDateKey(fromDate)) throw new Error('fromDate 必須是有效的 YYYY-MM-DD 日期');
   if(!Number.isInteger(days)||days<1||days>180) throw new Error('days 必須是 1 到 180 的整數');
-  const sourceSync=await syncSourceIntoSchedule();
+
+  // Preflight 所有會被讀寫的工作表，再開始來源同步；欄位錯誤時不先寫入固定課表／調課課程。
   await ensureSheet('課程提醒');
   await ensureSheetHeaders('課程校正',CORRECTION_HEADERS);
-  const [settingsRows,fixedRows,adjustRows,correctionRows,oldActualRows,contactRows,templateRows,reminderRows] = await readSheets();
+  let [settingsRows,fixedRows,adjustRows,correctionRows,oldActualRows,contactRows,templateRows,reminderRows]=await readSheets();
+  parseSettings(settingsRows);
+  parseFixed(fixedRows);
+  parseContacts(contactRows);
+  if(findHeaderRow(fixedRows,['固定課表ID','星期','上課時間','學生','課程','老師','校區','有效迄日','啟用','備註','通知模板'])<0){
+    throw new Error('固定課表缺少必要欄位（包含備註、通知模板）；已在來源同步前中止。');
+  }
+  if(findHeaderRow(adjustRows,['調課ID','原固定課表ID','原日期','原時間','動作','新日期','新時間','學生','新課程','新老師','新校區','確認','備註'])<0){
+    throw new Error('調課課程缺少必要欄位（包含新課程、新老師、新校區、備註）；已在來源同步前中止。');
+  }
+  if(findHeaderRow(oldActualRows,['Course ID','課程日期','星期','上課時間','學生','課程','老師','校區','來源','固定課表ID','調課ID','調課結果','備註'])<0){
+    throw new Error('實際課程缺少完整標題列；已在來源同步前中止。');
+  }
+  const templateHasData=(templateRows||[]).some(row=>Array.isArray(row)&&row.some(value=>str(value)!==''));
+  if(templateHasData&&findHeaderRow(templateRows,['模板名稱','適用對象','模板內容'])<0){
+    throw new Error('訊息模板已有資料但缺少必要標題列；已在來源同步前中止。');
+  }
+  const reminderPreflight=parseReminderRows(reminderRows);
+  const reminderHasData=(reminderRows||[]).some(row=>Array.isArray(row)&&row.some(value=>str(value)!==''));
+  if(reminderPreflight.headerRow<0&&reminderHasData){
+    throw new Error('課程提醒已有資料但找不到標準標題列；已在來源同步前中止。');
+  }
+  if(reminderPreflight.headerRow>=0){
+    const reminderHeaderMap=hmap(reminderPreflight.headers||[]);
+    const missing=REMINDER_HEADERS.filter(name=>reminderHeaderMap[name]===undefined);
+    if(missing.length) throw new Error('課程提醒缺少必要欄位：'+missing.join('、')+'；已在來源同步前中止。');
+  }
+
+  const sourceSync=await syncSourceIntoSchedule(fromDate);
+  [settingsRows,fixedRows,adjustRows,correctionRows,oldActualRows,contactRows,templateRows,reminderRows]=await readSheets();
   const settings=parseSettings(settingsRows);
-  const fixed=parseFixed(fixedRows); const adjusts=[...parseAdjust(adjustRows,correctionRows),...parseInlineAdjustments(fixed)]; const contacts=parseContacts(contactRows); const templates=parseTemplates(templateRows);
+  const fixed=parseFixed(fixedRows);
+  const adjusts=[...parseAdjust(adjustRows,correctionRows),...parseInlineAdjustments(fixed)];
+  const contacts=parseContacts(contactRows);
+  const templates=parseTemplates(templateRows);
   const fixedTemplateByIdInput=fixed;
   const actual=buildRows(fixed,adjusts,fromDate,days);
+  const toDate=addDays(fromDate,days-1);
+  const warnings=[
+    ...(sourceSync.warnings||[]),
+    ...fixedDataQualityWarnings(fixedRows,fromDate),
+    ...adjustmentConflictWarnings(adjusts),
+    ...actualIntegrityWarnings(actual),
+    ...missingRecipientWarnings(actual,contacts,settings),
+    ...notificationTemplateWarnings(templates,settings),
+    ...missingReminderTimeWarnings(actual,contacts,settings),
+    ...missingActualEndTimeWarnings(actual),
+    ...(sourceSync.unclassifiedCount?['來源課表有 '+sourceSync.unclassifiedCount+' 筆課程／備註無法自動判讀；未自動套用。例：'+(sourceSync.unclassifiedSamples||[]).slice(0,5).map(x=>[x.teacher,x.weekday,x.time,x.student].filter(Boolean).join(' ')).join('；')]:[])
+  ];
 
-  // 建立完成後再次確認少禹是否真的進入實際課程。
-  const diagFixed=fixed.filter(f=>['陳少禹','少禹'].some(n=>compact(f.student)===compact(n)));
-  const diagActual=actualObjects(actual).filter(x=>['陳少禹','少禹'].some(n=>compact(x.student)===compact(n)));
-  console.log('[SCHEDULE-DIAG] 少禹 Build 結果', {
-    fromDate,
-    toDate:addDays(fromDate,days-1),
-    fixedMatches:diagFixed.map(f=>({id:f.id,weekday:f.weekday,time:f.time,endTime:f.endTime,until:f.until,course:f.course,teacher:f.teacher,site:f.site,note:f.note})),
-    actualMatches:diagActual.map(x=>({courseId:x.courseId,date:x.date,weekday:x.weekday,time:x.time,student:x.student,course:x.course,teacher:x.teacher,site:x.site,source:x.source,fixedId:x.fixedId,adjustId:x.adjustId,adjustResult:x.adjustResult,note:x.note}))
-  });
-  await writeActual(actual,oldActualRows,fromDate,addDays(fromDate,days-1));
+  if(isYes(process.env.SCHEDULE_DEBUG_DIAGNOSTICS||'否')){
+    console.log('[SCHEDULE-DIAG] 自訂課表診斷', {
+      fromDate,toDate,
+      fixedMatches:fixed.map(f=>({id:f.id,weekday:f.weekday,time:f.time,endTime:f.endTime,student:f.student,course:f.course,teacher:f.teacher,site:f.site})).slice(0,100),
+      actualMatches:actualObjects(actual).map(x=>({courseId:x.courseId,date:x.date,time:x.time,student:x.student,course:x.course,teacher:x.teacher,adjustId:x.adjustId,adjustResult:x.adjustResult})).slice(0,100)
+    });
+  }
+
+  await writeActual(actual,oldActualRows,fromDate,toDate);
   const reminder=AUTO_CREATE_REMINDERS
     ? await syncReminders(actual,reminderRows,contacts,templates,settings,fromDate,days,fixedTemplateByIdInput)
-    : {expectedCount:0,created:0,updated:0,disabled:0,reminderServiceEnabled:settings.enabled==='是',autoCreateReminders:false,lineSending:false};
-  return {ok:true,fromDate,toDate:addDays(fromDate,days-1),sourceSync,fixedCount:fixed.length,adjustCount:adjusts.length,actualCount:actual.length,reminder};
+    : {expectedCount:0,created:0,updated:0,disabled:0,reminderServiceEnabled:isYes(settings.enabled),autoCreateReminders:false,lineSending:false};
+  return {ok:true,fromDate,toDate,sourceSync,fixedCount:fixed.length,adjustCount:adjusts.length,actualCount:actual.length,reminder,warnings};
 }
-
 let lastBuild={status:'not_run'};
 let buildInProgress=null;
 app.get('/health',(req,res)=>res.json({ok:true,service:'line-course-schedule-manager-v1.2',timezone:TZ,lastBuild}));
