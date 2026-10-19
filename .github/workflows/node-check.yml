@@ -2,7 +2,7 @@ name: Node syntax and parser tests
 
 on:
   push:
-    branches: [main]
+    branches: ['**']
   pull_request:
     branches: [main]
 
