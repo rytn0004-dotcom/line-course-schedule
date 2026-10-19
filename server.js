@@ -228,7 +228,7 @@ async function readSheets(){
       `${qsheet('固定課表')}!A:K`,
       `${qsheet('調課課程')}!A:M`,
       `${qsheet('課程校正')}!A:H`,
-      `${qsheet('實際課程')}!A:M`,
+      `${qsheet('實際課程')}!A:O`,
       `${qsheet('聯絡人')}!A:K`,
       `${qsheet('訊息模板')}!A:D`,
       `${qsheet('課程提醒')}!A:M`
@@ -795,29 +795,73 @@ function buildRows(fixed, adjusts, fromDate, days){
   }
   return final;
 }
-async function writeActual(rows, previousRows=[]){
-  let lastExistingDataRow=0;
-  for(let i=2;i<(previousRows||[]).length;i++){
-    const row=previousRows[i]||[];
-    if(row.some(value=>str(value)!=='')) lastExistingDataRow=i+1;
+function mergeActualRows(rows, previousRows, fromDate, toDate, headerRowIndex=1){
+  const dataStartIndex=Math.max(0,Number.isInteger(headerRowIndex)?headerRowIndex+1:2);
+  const previous=(previousRows||[]).slice(dataStartIndex).filter(row=>Array.isArray(row)&&row.some(value=>str(value)!==''));
+  const inWindow=row=>{
+    const date=dateKey(row?.[1]);
+    return isValidDateKey(date)&&date>=fromDate&&date<=toDate;
+  };
+  const priorInWindow=previous.filter(inWindow);
+  if((rows||[]).length===0&&priorInWindow.length>0){
+    throw new Error('安全保護：本次區間實際課程為 0 筆，但區間內仍有 '+priorInWindow.length+' 筆舊課程；已拒絕清空，請先檢查來源解析及日期範圍。');
   }
-  const previousDataCount=Math.max(0,lastExistingDataRow-2);
-  if(rows.length===0 && previousDataCount>0){
-    throw new Error('安全保護：本次實際課程結果為 0 筆，但工作表仍有 '+previousDataCount+' 筆舊課程；已拒絕清空資料，請先檢查來源解析及日期範圍。');
-  }
-  // 先寫入新資料；只有成功後才清除超出新範圍的舊尾列，避免先清空再遇到寫入失敗。
-  if(rows.length){
-    await retry('write 實際課程',()=>sheets.spreadsheets.values.update({
+  const normalizeRow=row=>{
+    const out=(row||[]).slice(0,15);
+    while(out.length<15) out.push('');
+    const range=parseTimeRange(out[3]);
+    if(!str(out[13])) out[13]=range.start||timeKey(out[3]);
+    if(!str(out[14])) out[14]=range.end||'';
+    return out;
+  };
+  const preserved=previous.filter(row=>!inWindow(row)).map(normalizeRow);
+  const replacements=(rows||[]).map(normalizeRow);
+  const merged=[...preserved,...replacements];
+  const sortStart=row=>timeKey(row[13])||parseTimeRange(row[3]).start||timeKey(row[3])||'99:99';
+  merged.sort((a,b)=>
+    dateKey(a[1]).localeCompare(dateKey(b[1]))||
+    sortStart(a).localeCompare(sortStart(b))||
+    str(a[4]).localeCompare(str(b[4]))||
+    str(a[5]).localeCompare(str(b[5]))||
+    str(a[6]).localeCompare(str(b[6]))
+  );
+  return {merged,previousDataCount:previous.length};
+}
+async function writeActual(rows, previousRows=[], fromDate=todayKey(), toDate=fromDate){
+  const headerColumns=[
+    'Course ID','課程日期','星期','上課時間','學生','課程','老師','校區',
+    '來源','固定課表ID','調課ID','調課結果','備註'
+  ];
+  const headerIndex=findHeaderRow(previousRows,headerColumns);
+  if(headerIndex<0) throw new Error('安全保護：「實際課程」找不到完整的前 13 欄標題，為避免寫錯欄位，未寫入資料。');
+  const headerRow=(previousRows[headerIndex]||[]).slice();
+  while(headerRow.length<15) headerRow.push('');
+  const attendanceHeaders=['開始時間（出勤用）','下課時間（出勤用）'];
+  if(headerRow[13]!==attendanceHeaders[0]||headerRow[14]!==attendanceHeaders[1]){
+    await retry('ensure 實際課程 attendance headers',()=>sheets.spreadsheets.values.update({
       spreadsheetId:SHEET_ID,
-      range:`${qsheet('實際課程')}!A3:M${rows.length+2}`,
-      valueInputOption:'RAW',requestBody:{values:rows}
+      range:qsheet('實際課程')+'!N'+(headerIndex+1)+':O'+(headerIndex+1),
+      valueInputOption:'RAW',requestBody:{values:[attendanceHeaders]}
     }));
   }
-  const newLastRow=rows.length+2;
+  const {merged}=mergeActualRows(rows,previousRows,fromDate,toDate,headerIndex);
+  const firstDataRow=headerIndex+2;
+  const lastExistingDataRow=Math.max(headerIndex+1,(previousRows||[]).reduce((last,row,i)=>{
+    if(i>headerIndex&&Array.isArray(row)&&row.some(value=>str(value)!=='')) return i+1;
+    return last;
+  },0));
+  const newLastRow=headerIndex+1+merged.length;
+  if(merged.length){
+    await retry('write 實際課程',()=>sheets.spreadsheets.values.update({
+      spreadsheetId:SHEET_ID,
+      range:qsheet('實際課程')+'!A'+firstDataRow+':O'+newLastRow,
+      valueInputOption:'RAW',requestBody:{values:merged}
+    }));
+  }
   if(lastExistingDataRow>newLastRow){
     await retry('clear stale tail 實際課程',()=>sheets.spreadsheets.values.clear({
       spreadsheetId:SHEET_ID,
-      range:`${qsheet('實際課程')}!A${newLastRow+1}:M${lastExistingDataRow}`,
+      range:qsheet('實際課程')+'!A'+(newLastRow+1)+':O'+lastExistingDataRow,
       requestBody:{}
     }));
   }
@@ -1572,7 +1616,7 @@ async function build({fromDate=todayKey(),days=DEFAULT_DAYS}={}){
     fixedMatches:diagFixed.map(f=>({id:f.id,weekday:f.weekday,time:f.time,endTime:f.endTime,until:f.until,course:f.course,teacher:f.teacher,site:f.site,note:f.note})),
     actualMatches:diagActual.map(x=>({courseId:x.courseId,date:x.date,weekday:x.weekday,time:x.time,student:x.student,course:x.course,teacher:x.teacher,site:x.site,source:x.source,fixedId:x.fixedId,adjustId:x.adjustId,adjustResult:x.adjustResult,note:x.note}))
   });
-  await writeActual(actual,oldActualRows);
+  await writeActual(actual,oldActualRows,fromDate,addDays(fromDate,days-1));
   const reminder=AUTO_CREATE_REMINDERS
     ? await syncReminders(actual,reminderRows,contacts,templates,settings,fromDate,days,fixedTemplateByIdInput)
     : {expectedCount:0,created:0,updated:0,disabled:0,reminderServiceEnabled:settings.enabled==='是',autoCreateReminders:false,lineSending:false};
