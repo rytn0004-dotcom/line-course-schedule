@@ -129,7 +129,7 @@ function dateKey(v){
 function timeKey(v){
   if(typeof v==='number'){ const mins=Math.round((v%1)*24*60); return String(Math.floor(mins/60)%24).padStart(2,'0')+':'+String(mins%60).padStart(2,'0'); }
   const x=str(v).replace(/\s+/g,''); const m=x.match(/^(\d{1,2}):([0-5]\d)/);
-  if(m) return String(+m[1]).padStart(2,'0')+':'+m[2];
+  if(m && Number(m[1])<24) return String(Number(m[1])).padStart(2,'0')+':'+m[2];
   if(/^\d{3,4}$/.test(x)){ const n=x.padStart(4,'0'),hh=+n.slice(0,2),mm=+n.slice(2); if(hh<24&&mm<60)return String(hh).padStart(2,'0')+':'+String(mm).padStart(2,'0'); }
   return '';
 }
@@ -1781,15 +1781,16 @@ function actualIntegrityWarnings(actualRows){
   const addInterval=(map,key,item)=>{if(!map.has(key))map.set(key,new Map());map.get(key).set(item.signature,item);};
   for(const row of rows){
     const date=dateKey(row?.[1]),range=parseTimeRange(row?.[3]);
-    const start=range.start||timeKey(row?.[13])||timeKey(row?.[3]);
-    const end=range.end||timeKey(row?.[14]);
+    const attendanceStart=timeKey(row?.[13]),attendanceEnd=timeKey(row?.[14]);
+    const start=range.start||attendanceStart||timeKey(row?.[3]);
+    const end=range.end||attendanceEnd;
     const student=str(row?.[4]),course=str(row?.[5]),teacher=str(row?.[6]),site=normalizeSite(row?.[7]);
     const label=[student,date,str(row?.[3]),course,teacher].filter(Boolean).join(' / ');
     if(!isValidDateKey(date)) invalidDateSamples.push(label||'(空白課程)');
     if(!start) invalidTimeSamples.push(label||'(空白課程)');
     if(start&&end&&minutes(end)<=minutes(start)) invalidTimeSamples.push(label+'（下課時間不晚於上課時間）');
-    if(range.start&&start&&range.start!==start) inconsistentTimeSamples.push(label+'（上課時間與出勤開始時間不一致）');
-    if(range.end&&end&&range.end!==end) inconsistentTimeSamples.push(label+'（上課時間與出勤下課時間不一致）');
+    if(range.start&&attendanceStart&&range.start!==attendanceStart) inconsistentTimeSamples.push(label+'（上課時間與出勤開始時間不一致）');
+    if(range.end&&attendanceEnd&&range.end!==attendanceEnd) inconsistentTimeSamples.push(label+'（上課時間與出勤下課時間不一致）');
     const duplicateKey=[date,start,end,compact(student),compact(course),compact(teacher),compact(site)].join('|');
     if(isValidDateKey(date)&&start&&student){
       if(seen.has(duplicateKey)){if(duplicateSamples.length<5)duplicateSamples.push(label);}
