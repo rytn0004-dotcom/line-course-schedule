@@ -2069,6 +2069,22 @@ function rawFontColorAt(cell, charIndex, themeColors = {}){
   const runColor=rawFormatColor(selected,themeColors);
   if(runColor && runColor.rgb) return runColor;
   if(runColor && runColor.source && runColor.source.startsWith('theme:')) return runColor;
+
+  // If rich-text runs explicitly color only part of a cell (for example a
+  // yellow newline between two black course entries), do not spread the
+  // cell-level effective color into a run whose own font color is omitted.
+  // Doing so can incorrectly mark neighboring lessons as yellow-confirmation.
+  const hasExplicitRunColor=runs.some(run=>{
+    const format=run && run.format || {};
+    const style=format.foregroundColorStyle || {};
+    const legacy=format.foregroundColor || {};
+    return Boolean(style.rgbColor || style.themeColor ||
+      ['red','green','blue'].some(key=>typeof legacy[key]==='number'));
+  });
+  if(runs.length && hasExplicitRunColor){
+    return {rgb:[0,0,0],source:'text-run-default-black'};
+  }
+
   const cellFormat=(cell && cell.effectiveFormat && cell.effectiveFormat.textFormat) ||
     (cell && cell.userEnteredFormat && cell.userEnteredFormat.textFormat) || null;
   const cellColor=rawFormatColor(cellFormat,themeColors);
