@@ -2811,7 +2811,7 @@ async function readRawSourcePreview(){
     spreadsheetId:sourceSpreadsheetId,
     ranges:[qsheet(sourceTitle)+'!A:Z'],
     includeGridData:true,
-    fields:'properties(spreadsheetTheme),sheets(properties(sheetId,title),data(rowData(values(formattedValue,userEnteredValue,effectiveFormat(textFormat(foregroundColor,foregroundColorStyle)),userEnteredFormat(textFormat(foregroundColor,foregroundColorStyle)),textFormatRuns))))'
+    fields:'properties(spreadsheetTheme),sheets(properties(sheetId,title),data(rowData(values(formattedValue,userEnteredValue,effectiveFormat(textFormat(foregroundColor,foregroundColorStyle)),userEnteredFormat(textFormat(foregroundColor,foregroundColorStyle)),textFormatRuns(startIndex,format(foregroundColor,foregroundColorStyle))))))'
   }));
   const sourceSheet=(sourceResponse.data.sheets||[]).find(x=>Number(x.properties && x.properties.sheetId)===Number(selectedSheet.properties.sheetId));
   if(!sourceSheet) throw new Error('無法讀取指定來源分頁的格線資料。');
