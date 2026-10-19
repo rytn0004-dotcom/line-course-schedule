@@ -1125,7 +1125,9 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
   await ensureSheet('課程提醒');
   const fixedTemplateById=new Map();
   for(const f of fixedTemplateByIdInput) fixedTemplateById.set(f.id,f.template || '');
-  const expected=makeReminderRows(actualObjects(actualRows),contacts,templates,settings,fixedTemplateById);
+  const expected=(AUTO_CREATE_REMINDERS&&isYes(settings.enabled))
+    ? makeReminderRows(actualObjects(actualRows),contacts,templates,settings,fixedTemplateById)
+    : [];
   const expectedKeys=new Set(expected.map(x=>x.id+'|'+x.role+'|'+x.recipient));
   const expectedLogicalKeys=new Set(expected.map(x=>{
     if(x.role==='老師'){
@@ -1189,11 +1191,18 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
       const preserveMsg = str(row[getIdx('訊息內容')]);
       const preserveConfirm = str(row[getIdx('確認發送')]);
       const isGeneratedReminder = /-(?:P|T)$/.test(old.id) || old.id.startsWith('MERGED-');
-      Object.assign(row, toOutput({...x,id:old.id}));
-      // 自動產生的提醒（包含 MERGED- 每日老師提醒）必須同步最新學生成員與訊息內容。
-      // 手動建立的提醒（例如 TEST-...）仍保留人工編輯過的訊息。
-      if(preserveMsg && !isGeneratedReminder) row[getIdx('訊息內容')]=preserveMsg;
-      if(preserveConfirm) row[getIdx('確認發送')]=preserveConfirm;
+      const proposedRow=toOutput({...x,id:old.id});
+      const sameReminderContent=shouldPreserveReminderConfirmation(old.values,proposedRow,headers,isGeneratedReminder);
+      const hadUserVisibleContentBeforeUpdate=!!str(row[getIdx('學生/學生成員')])||!!str(row[getIdx('課程')])||!!preserveMsg;
+      Object.assign(row,proposedRow);
+      // 自動提醒同步新訊息；手動提醒保留人工訊息。
+      if(preserveMsg&&!isGeneratedReminder) row[getIdx('訊息內容')]=preserveMsg;
+      // 提醒關鍵欄位或內容變更就重新確認，不能沿用舊的「是」。
+      if(preserveConfirm&&sameReminderContent&&hadUserVisibleContentBeforeUpdate){
+        row[getIdx('確認發送')]=isYes(preserveConfirm)?'是':(isNo(preserveConfirm)?'否':x.confirm);
+      }else{
+        row[getIdx('確認發送')]=x.confirm;
+      }
       updates.push({rowNumber:old.rowIndex,values:row});
       updated++;
     }else{
@@ -1233,15 +1242,15 @@ async function syncReminders(actualRows, reminderRows, contacts, templates, sett
 
   for(const u of updates){
     batchData.push({
-      range:`${qsheet('課程提醒')}!A${u.rowNumber}:${String.fromCharCode(64+Math.min(width,26))}${u.rowNumber}`,
+      range:qsheet('課程提醒')+'!A'+u.rowNumber+':'+columnLetter(width)+u.rowNumber,
       values:[u.values]
     });
   }
 
   if(append.length){
-    const startRow=parsed.rows.length ? Math.max(...parsed.rows.map(r=>r.rowIndex))+1 : (parsed.headerRow>=0 ? parsed.headerRow+2 : 2);
+    const startRow=Math.max((reminderRows||[]).length+1,parsed.headerRow>=0 ? parsed.headerRow+2 : 2);
     batchData.push({
-      range:`${qsheet('課程提醒')}!A${startRow}:${String.fromCharCode(64+Math.min(width,26))}${startRow+append.length-1}`,
+      range:qsheet('課程提醒')+'!A'+startRow+':'+columnLetter(width)+(startRow+append.length-1),
       values:append
     });
   }
