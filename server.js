@@ -1620,7 +1620,15 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
       values:adjustOutput
     });
   }
-  // 將固定課表修正、新增固定課表與新增調課合併為單一 Sheets 寫入請求，
+  if(pendingTranslationSetting){
+    const rowNumber=pendingTranslationSetting.rowNumber;
+    const width=pendingTranslationSetting.width;
+    sourceWriteData.push({
+      range:qsheet('系統設定')+'!A'+rowNumber+':'+columnLetter(width)+rowNumber,
+      values:[pendingTranslationSetting.values]
+    });
+  }
+  // 將固定課表修正、新增固定課表、調課與新增來源設定合併為單一 Sheets 寫入請求，
   // 避免中途 API 失敗時只完成一半來源同步。
   if(sourceWriteData.length){
     await retry('batch sync source schedule',()=>sheets.spreadsheets.values.batchUpdate({
@@ -1628,14 +1636,22 @@ async function syncSourceIntoSchedule(referenceDate=todayKey()){
       requestBody:{valueInputOption:'RAW',data:sourceWriteData}
     }));
   }
+  const warnings=[];
+  if(fixedDedup.suppressed) warnings.push('來源課表有 '+fixedDedup.suppressed+' 筆完全相同的固定課程列，已合併，避免重複建立固定課表 ID。');
+  if(parsed.unclassifiedItems.length) warnings.push('來源課表有 '+parsed.unclassifiedItems.length+' 筆課程／註記無法自動判讀，未自動匯入。');
   return {
     sourceSheet:'開學課表',
-    sourceFixedParsed:parsed.fixed.length,
+    sourceFixedParsed:sourceFixedParsedCount,
+    duplicateFixedRowsSuppressed:fixedDedup.suppressed,
     sourceAdjustmentsParsed:parsed.adjustments.length,
     fixedAdded:fixedOutput.length,
     fixedCorrected:fixedUpdates.length,
     adjustmentsAdded:adjustOutput.length,
     adjustmentsCorrected:adjustmentUpdates.length,
+    redCancelled:parsed.redItems.length,
+    unclassifiedCount:parsed.unclassifiedItems.length,
+    unclassifiedSamples:parsed.unclassifiedItems.slice(0,5).map(x=>({teacher:x.teacher,weekday:x.weekday,time:x.time,student:x.student,note:x.note})),
+    warnings,
     existingRowsPreserved:true,
     translationEnabled:true
   };
