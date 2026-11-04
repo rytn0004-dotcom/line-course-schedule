@@ -87,6 +87,12 @@ test('parses purple source moves with multiple target dates and non-30-minute du
   });
 });
 
+test('parses date-only variants with duration values other than 30 minutes', () => {
+  assert.deepEqual(parseDurationTargetDates('11/2、11/9和11/16各+45分鐘', 2026), {
+    sourceDate: '', targetDates: ['2026-11-02', '2026-11-09', '2026-11-16']
+  });
+});
+
 test('preserves start and end in course time ranges', () => {
   assert.equal(normalizeTimeRange('0900-1030'), '09:00-10:30');
   assert.equal(normalizeTimeRange('09:00~10:30'), '09:00-10:30');
