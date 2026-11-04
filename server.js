@@ -2132,7 +2132,7 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
             source:'開學課表'
           });
         }
-        const hasExplicitMoveNote=(item.annotations||[]).some(a=>/(?:^|[^0-9])\d{1,2}\/\d{1,2}\s*p\s*調/i.test(str(a)));
+        const hasExplicitMoveNote=(item.annotations||[]).some(a=>/(?:^|[^0-9])\d{1,2}\/\d{1,2}[^()]*?調/i.test(str(a)));
         if(item.durationAdjustmentMinutes&&['black','yellow','purple'].includes(item.colorStatus)&&!hasExplicitMoveNote){
           durationRows.push(item);
           continue;
