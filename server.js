@@ -1733,10 +1733,10 @@ function parseRawCourseCell(cell, teacher, weekday, year = new Date().getFullYea
     if(!student || isUnavailableSlot(student)) continue;
     const annotationText=annotations.join('；');
     const startsOn=parseCourseStartDateNote(annotationText,year);
-    const durationMatch=student.match(/(?:\+|＋)\s*30\s*min(?:ute)?s?/i);
-    const durationVariantNote=/(?:後\s*)?各\s*(?:[+＋]\s*)?(?:加\s*)?30\s*(?:min(?:ute)?s?|分鐘|分)/i.test(annotationText);
-    const durationAdjustmentMinutes=(durationMatch||durationVariantNote)?30:0;
-    if(durationMatch) student=student.replace(/(?:\+|＋)\s*30\s*min(?:ute)?s?/ig,'').trim();
+    const durationMatch=student.match(/(?:\+|＋)\s*(\d{1,3})\s*(?:min(?:ute)?s?|分鐘|分)/i);
+    const durationVariantMatch=annotationText.match(/(?:後\s*)?各\s*(?:[+＋]\s*)?(?:加\s*)?(\d{1,3})\s*(?:min(?:ute)?s?|分鐘|分)/i);
+    const durationAdjustmentMinutes=durationMatch?Number(durationMatch[1]):durationVariantMatch?Number(durationVariantMatch[1]):0;
+    if(durationMatch) student=student.replace(/(?:\+|＋)\s*\d{1,3}\s*(?:min(?:ute)?s?|分鐘|分)/ig,'').trim();
     let course='';
     const groupMatch=student.match(/^(.*?團班)\s*[（(]([^（）()]*)[）)]$/);
     if(groupMatch){
@@ -2132,7 +2132,8 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
             source:'開學課表'
           });
         }
-        if(item.durationAdjustmentMinutes&&['black','yellow','purple'].includes(item.colorStatus)){
+        const hasExplicitMoveNote=(item.annotations||[]).some(a=>/(?:^|[^0-9])\d{1,2}\/\d{1,2}\s*p\s*調/i.test(str(a)));
+        if(item.durationAdjustmentMinutes&&['black','yellow','purple'].includes(item.colorStatus)&&!hasExplicitMoveNote){
           durationRows.push(item);
           continue;
         }
@@ -2154,12 +2155,14 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
               compact(x.teacher)===compact(item.teacher)&&
               x.colorStatus==='black'&&!x.durationAdjustmentMinutes
             );
-            const base=baseCandidates.find(x=>x.time===item.time)||(baseCandidates.length===1?baseCandidates[0]:null);
+            const exactBaseCandidates=baseCandidates.filter(x=>x.time===item.time);
+            const base=exactBaseCandidates.length===1?exactBaseCandidates[0]:
+              (exactBaseCandidates.length===0&&baseCandidates.length===1?baseCandidates[0]:null);
             if(base){
               for(const d of explicitDates)addPurpleDateScopedVariant(item,d,base,item.annotations.join('；'));
               continue;
             }
-            if(baseCandidates.length>1){
+            if(baseCandidates.length>1||exactBaseCandidates.length>1){
               unclassifiedItems.push({...item,note:'[紫色課程待確認] 找到多筆可能對應的固定課程，未自動覆寫'});
               continue;
             }
@@ -2194,6 +2197,17 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
           fixed.push(item);
           adjustments.push(...parseRawAdjustmentAnnotations(item,year));
         }else if(item.colorStatus==='purple'){
+          const explicitMoves=parseRawAdjustmentAnnotations(item,year).filter(a=>
+            a.originalDate&&a.newDate&&a.originalDate!==a.newDate&&
+            /調課|移課|改課|代課/.test(str(a.action))
+          );
+          if(explicitMoves.length){
+            adjustments.push(...explicitMoves.map(a=>({
+              ...a,
+              note:'[單次／紫色調課] '+str(a.note||item.raw||item.student)
+            })));
+            continue;
+          }
           const oneTime=parseRawPurpleCourse(item,year);
           if(oneTime.length)adjustments.push(...oneTime);
           else unclassifiedItems.push({...item,note:'[紫色課程待確認] 無法從備註判定單次上課日期或原／新日期'});
