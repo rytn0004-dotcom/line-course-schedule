@@ -2231,7 +2231,9 @@ function parseRawSchedule(rows, year = new Date().getFullYear(), themeColors = {
       compact(x.teacher)===compact(item.teacher)&&
       x.colorStatus==='black'&&!x.durationAdjustmentMinutes
     );
-    const base=baseCandidates.find(x=>x.time===item.time)||(baseCandidates.length===1?baseCandidates[0]:null);
+    const exactBaseCandidates=baseCandidates.filter(x=>x.time===item.time);
+    const base=exactBaseCandidates.length===1?exactBaseCandidates[0]:
+      (exactBaseCandidates.length===0&&baseCandidates.length===1?baseCandidates[0]:null);
 
     if(parsedDates.sourceDate&&base&&weekdayLabel(parsedDates.sourceDate)===item.weekday){
       adjustments.push({
