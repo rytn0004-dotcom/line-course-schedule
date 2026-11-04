@@ -79,6 +79,13 @@ test('parses duration variants written with Chinese minute units and conjunction
   });
 });
 
+test('recognizes a move note with an intervening absence reason before 調', () => {
+  assert.deepEqual(parseDurationTargetDates('10/29p隔宿調11/5、11/12和11/19各+30min', 2026), {
+    sourceDate: '2026-10-29',
+    targetDates: ['2026-11-05', '2026-11-12', '2026-11-19']
+  });
+});
+
 test('parses purple source moves with multiple target dates and non-30-minute duration', () => {
   const result = parseDurationTargetDates('7/17p調11/3、11/10各+45min', 2026);
   assert.deepEqual(result, {
