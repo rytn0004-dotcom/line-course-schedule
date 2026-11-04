@@ -156,18 +156,18 @@ function parseDurationTargetDates(value, year = new Date().getFullYear()) {
   if (!source) return { sourceDate: '', targetDates: [] };
 
   // Ignore explanatory exception clauses after the first "除了".
-  const primary = source.split(/(?:，|,)\\s*除了/)[0].trim();
-  const suffix = primary.match(/(?:後\\s*)?各\\s*(?:[+＋]\\s*)?(?:加\\s*)?\\d+\\s*(?:min(?:ute)?s?|分鐘|分)\\s*$/i);
+  const primary = source.split(/(?:，|,)\s*除了/)[0].trim();
+  const suffix = primary.match(/(?:後\s*)?各\s*(?:[+＋]\s*)?(?:加\s*)?\d+\s*(?:min(?:ute)?s?|分鐘|分)\s*$/i);
   const body = suffix ? primary.slice(0, suffix.index).trim() : primary;
 
   // "7/17p調11/3、11/10各+45min" => source 7/17, targets 11/3 and 11/10.
-  const move = body.match(/(\\d{1,2})\\/(\\d{1,2})\\s*p\\s*調/i);
+  const move = body.match(/(\d{1,2})\/(\d{1,2})\s*p\s*調/i);
   const sourceDate = move ? parseMonthDay(move[1], move[2], year) : '';
   const dateText = move ? body.slice(move.index + move[0].length) : body;
 
   const targetDates = [];
   const seen = new Set();
-  const re = /(\\d{1,2})\\/(\\d{1,2})/g;
+  const re = /(\d{1,2})\/(\d{1,2})/g;
   let match;
   while ((match = re.exec(dateText))) {
     const date = parseMonthDay(match[1], match[2], year);
@@ -185,13 +185,13 @@ function parseDurationTargetDates(value, year = new Date().getFullYear()) {
 function parseExplicitDateList(value, year = new Date().getFullYear()) {
   const source = String(value ?? '').trim();
   if (!source) return [];
-  const suffix = source.match(/(?:後\\s*)?各\\s*(?:[+＋]\\s*)?(?:加\\s*)?\\d+\\s*(?:min(?:ute)?s?|分鐘|分)\\s*$/i);
+  const suffix = source.match(/(?:後\s*)?各\s*(?:[+＋]\s*)?(?:加\s*)?\d+\s*(?:min(?:ute)?s?|分鐘|分)\s*$/i);
   const dateText = suffix ? source.slice(0, suffix.index).trim() : source;
-  const matches = [...dateText.matchAll(/(\\d{1,2})\\/(\\d{1,2})/g)];
+  const matches = [...dateText.matchAll(/(\d{1,2})\/(\d{1,2})/g)];
   if (!matches.length) return [];
   const residue = dateText
-    .replace(/(\\d{1,2})\\/(\\d{1,2})/g, 'DATE')
-    .replace(/[、,，\\s和及與]/g, '');
+    .replace(/(\d{1,2})\/(\d{1,2})/g, 'DATE')
+    .replace(/[、,，\s和及與]/g, '');
   if (residue !== 'DATE'.repeat(matches.length)) return [];
 
   const dates = [];
