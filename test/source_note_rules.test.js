@@ -10,6 +10,7 @@ const {
   isSourceImportedFixedNote,
   extractReminderStudentNames,
   parseDurationTargetDates,
+  parseExplicitDateList,
   parseCourseStartDateNote,
   parseSameDayTimeChangeNote,
   parseTeacherAbsenceNote,
@@ -75,6 +76,14 @@ test('parses duration variants written with Chinese minute units and conjunction
   assert.deepEqual(parseDurationTargetDates('10/30p調11/6、11/13、11/20、11/27、12/4和12/11b各+30min', 2026), {
     sourceDate: '2026-10-30',
     targetDates: ['2026-11-06', '2026-11-13', '2026-11-20', '2026-11-27', '2026-12-04', '2026-12-11']
+  });
+});
+
+test('parses purple source moves with multiple target dates and non-30-minute duration', () => {
+  const result = parseDurationTargetDates('7/17p調11/3、11/10各+45min', 2026);
+  assert.deepEqual(result, {
+    sourceDate: '2026-07-17',
+    targetDates: ['2026-11-03', '2026-11-10']
   });
 });
 
