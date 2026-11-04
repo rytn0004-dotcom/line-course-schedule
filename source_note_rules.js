@@ -154,22 +154,28 @@ function parseSingleDateOnlyNote(annotations, year = new Date().getFullYear()) {
 function parseDurationTargetDates(value, year = new Date().getFullYear()) {
   const source = String(value ?? '').trim();
   if (!source) return { sourceDate: '', targetDates: [] };
-  const origin = source.match(/(\d{1,2})\/(\d{1,2})\s*p\s*調/i);
-  const durationSuffix = /(?:後\s*)?各\s*(?:[+＋]\s*)?(?:加\s*)?\d+\s*(?:min(?:ute)?s?|分鐘|分)/i;
-  const repeated = source.match(new RegExp('調\\\\s*(.*?)\\\\s*' + durationSuffix.source, 'i'));
-  const plainVariant = source.match(new RegExp('^(.*?)\\\\s*' + durationSuffix.source + '
+
+  // Ignore explanatory exception clauses after the first "除了".
+  const primary = source.split(/(?:，|,)\\s*除了/)[0].trim();
+  const suffix = primary.match(/(?:後\\s*)?各\\s*(?:[+＋]\\s*)?(?:加\\s*)?\\d+\\s*(?:min(?:ute)?s?|分鐘|分)\\s*$/i);
+  const body = suffix ? primary.slice(0, suffix.index).trim() : primary;
+
+  // "7/17p調11/3、11/10各+45min" => source 7/17, targets 11/3 and 11/10.
+  const move = body.match(/(\\d{1,2})\\/(\\d{1,2})\\s*p\\s*調/i);
+  const sourceDate = move ? parseMonthDay(move[1], move[2], year) : '';
+  const dateText = move ? body.slice(move.index + move[0].length) : body;
+
   const targetDates = [];
   const seen = new Set();
-  const re = /(\d{1,2})\/(\d{1,2})/g;
-  let m;
-  while ((m = re.exec(dateText))) {
-    const date = parseMonthDay(m[1], m[2], year);
+  const re = /(\\d{1,2})\\/(\\d{1,2})/g;
+  let match;
+  while ((match = re.exec(dateText))) {
+    const date = parseMonthDay(match[1], match[2], year);
     if (date && !seen.has(date)) {
       seen.add(date);
       targetDates.push(date);
     }
   }
-  const sourceDate = origin ? parseMonthDay(origin[1], origin[2], year) : '';
   return { sourceDate, targetDates };
 }
 
@@ -179,14 +185,15 @@ function parseDurationTargetDates(value, year = new Date().getFullYear()) {
 function parseExplicitDateList(value, year = new Date().getFullYear()) {
   const source = String(value ?? '').trim();
   if (!source) return [];
-  const suffix = source.match(/^(.*?)\s*(?:後\s*)?各\s*(?:[+＋]\s*)?(?:加\s*)?\d+\s*(?:min(?:ute)?s?|分鐘|分)\s*$/i);
-  const dateText = suffix ? suffix[1].trim() : source;
-  const matches = [...dateText.matchAll(/(\d{1,2})\/(\d{1,2})/g)];
+  const suffix = source.match(/(?:後\\s*)?各\\s*(?:[+＋]\\s*)?(?:加\\s*)?\\d+\\s*(?:min(?:ute)?s?|分鐘|分)\\s*$/i);
+  const dateText = suffix ? source.slice(0, suffix.index).trim() : source;
+  const matches = [...dateText.matchAll(/(\\d{1,2})\\/(\\d{1,2})/g)];
   if (!matches.length) return [];
   const residue = dateText
-    .replace(/(\d{1,2})\/(\d{1,2})/g, 'DATE')
-    .replace(/[、,，\s和及與]/g, '');
+    .replace(/(\\d{1,2})\\/(\\d{1,2})/g, 'DATE')
+    .replace(/[、,，\\s和及與]/g, '');
   if (residue !== 'DATE'.repeat(matches.length)) return [];
+
   const dates = [];
   const seen = new Set();
   for (const match of matches) {
