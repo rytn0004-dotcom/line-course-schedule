@@ -161,7 +161,7 @@ function parseDurationTargetDates(value, year = new Date().getFullYear()) {
   const body = suffix ? primary.slice(0, suffix.index).trim() : primary;
 
   // "7/17p調11/3、11/10各+45min" => source 7/17, targets 11/3 and 11/10.
-  const move = body.match(/(\d{1,2})\/(\d{1,2})\s*p\s*調/i);
+  const move = body.match(/(\d{1,2})\/(\d{1,2})[^()]*?調/i);
   const sourceDate = move ? parseMonthDay(move[1], move[2], year) : '';
   const dateText = move ? body.slice(move.index + move[0].length) : body;
 
