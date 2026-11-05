@@ -8,6 +8,7 @@ const {
   hasDateScopedTargetOverride,
   mergeExplicitMoveDestinationOverrides,
   isSourceImportedFixedNote,
+  normalizeStudentNameForContact,
   extractReminderStudentNames,
   parseDurationTargetDates,
   parseCourseStartDateNote,
@@ -189,6 +190,12 @@ test('suppresses weekly slot when an explicit move target replaces it on the sam
     newTime: '18:00-20:00',
     note: '[單次課程] 單次額外課程'
   }], '2026-10-22', '測試學生B', '18:00'), false);
+});
+
+test('exports and normalizes student names for contact matching', () => {
+  assert.equal(normalizeStudentNameForContact(' 彥銘 英文 '), '彥銘');
+  assert.equal(normalizeStudentNameForContact(' 國二理化團班 '), '國二理化團班');
+  assert.equal(normalizeStudentNameForContact(''), '');
 });
 
 test('extracts group members without confusing the group label or date note for a student', () => {
