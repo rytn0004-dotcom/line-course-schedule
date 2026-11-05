@@ -154,22 +154,56 @@ function parseSingleDateOnlyNote(annotations, year = new Date().getFullYear()) {
 function parseDurationTargetDates(value, year = new Date().getFullYear()) {
   const source = String(value ?? '').trim();
   if (!source) return { sourceDate: '', targetDates: [] };
-  const origin = source.match(/(\d{1,2})\/(\d{1,2})\s*p\s*調/i);
-  const repeated = source.match(/調\s*(.*?)\s*各\s*[+＋]?\s*\d+\s*min(?:ute)?s?/i);
-  const dateText = repeated ? repeated[1] : source.split(/(?:，|,)\s*除了/)[0];
+
+  // Ignore explanatory exception clauses after the first "除了".
+  const primary = source.split(/(?:，|,)\s*除了/)[0].trim();
+  const suffix = primary.match(/(?:後\s*)?各\s*(?:[+＋]\s*)?(?:加\s*)?\d+\s*(?:min(?:ute)?s?|分鐘|分)\s*$/i);
+  const body = suffix ? primary.slice(0, suffix.index).trim() : primary;
+
+  // "7/17p調11/3、11/10各+45min" => source 7/17, targets 11/3 and 11/10.
+  const move = body.match(/(\d{1,2})\/(\d{1,2})[^()]*?調/i);
+  const sourceDate = move ? parseMonthDay(move[1], move[2], year) : '';
+  const dateText = move ? body.slice(move.index + move[0].length) : body;
+
   const targetDates = [];
   const seen = new Set();
   const re = /(\d{1,2})\/(\d{1,2})/g;
-  let m;
-  while ((m = re.exec(dateText))) {
-    const date = parseMonthDay(m[1], m[2], year);
+  let match;
+  while ((match = re.exec(dateText))) {
+    const date = parseMonthDay(match[1], match[2], year);
     if (date && !seen.has(date)) {
       seen.add(date);
       targetDates.push(date);
     }
   }
-  const sourceDate = origin ? parseMonthDay(origin[1], origin[2], year) : '';
   return { sourceDate, targetDates };
+}
+
+// Parse a purple, date-scoped course note that contains only dates and safe connectors,
+// optionally followed by an explicit per-date duration phrase.
+// Examples: "11/21", "11/2、11/9和11/16", "10/17、11/7和11/14後各加30分".
+function parseExplicitDateList(value, year = new Date().getFullYear()) {
+  const source = String(value ?? '').trim();
+  if (!source) return [];
+  const suffix = source.match(/(?:後\s*)?各\s*(?:[+＋]\s*)?(?:加\s*)?\d+\s*(?:min(?:ute)?s?|分鐘|分)\s*$/i);
+  const dateText = suffix ? source.slice(0, suffix.index).trim() : source;
+  const matches = [...dateText.matchAll(/(\d{1,2})\/(\d{1,2})/g)];
+  if (!matches.length) return [];
+  const residue = dateText
+    .replace(/(\d{1,2})\/(\d{1,2})/g, 'DATE')
+    .replace(/[、,，\s和及與]/g, '');
+  if (residue !== 'DATE'.repeat(matches.length)) return [];
+
+  const dates = [];
+  const seen = new Set();
+  for (const match of matches) {
+    const date = parseMonthDay(match[1], match[2], year);
+    if (date && !seen.has(date)) {
+      seen.add(date);
+      dates.push(date);
+    }
+  }
+  return dates;
 }
 
 // A teacher cell can include "11月後的課程還要再做確認" below the name.
@@ -329,6 +363,7 @@ module.exports = {
   extractReminderStudentNames,
   isValidDateKey,
   parseDurationTargetDates,
+  parseExplicitDateList,
   parseMonthDay,
   parseCourseStartDateNote,
   parseSameDayTimeChangeNote,

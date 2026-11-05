@@ -11,6 +11,7 @@ const {
   normalizeStudentNameForContact,
   extractReminderStudentNames,
   parseDurationTargetDates,
+  parseExplicitDateList,
   parseCourseStartDateNote,
   parseSameDayTimeChangeNote,
   parseTeacherAbsenceNote,
@@ -53,6 +54,51 @@ test('extracts only the explicit dates for the +30 minute schedule variant', () 
       targetDates: ['2026-09-21', '2026-10-05', '2026-10-12']
     }
   );
+});
+
+test('recognizes safe single and multi-date purple annotations, but rejects uncertain date text', () => {
+  assert.deepEqual(parseExplicitDateList('11/21', 2026), ['2026-11-21']);
+  assert.deepEqual(parseExplicitDateList('11/2、11/9和11/16', 2026), [
+    '2026-11-02', '2026-11-09', '2026-11-16'
+  ]);
+  assert.deepEqual(parseExplicitDateList('10/17、11/7和11/14後各加30分', 2026), [
+    '2026-10-17', '2026-11-07', '2026-11-14'
+  ]);
+  assert.deepEqual(parseExplicitDateList('10/8、?', 2026), []);
+});
+
+test('parses duration variants written with Chinese minute units and conjunctions', () => {
+  assert.deepEqual(parseDurationTargetDates('11/2、11/9和11/16各+30分鐘', 2026), {
+    sourceDate: '', targetDates: ['2026-11-02', '2026-11-09', '2026-11-16']
+  });
+  assert.deepEqual(parseDurationTargetDates('10/17、11/7和11/14後各加30分', 2026), {
+    sourceDate: '', targetDates: ['2026-10-17', '2026-11-07', '2026-11-14']
+  });
+  assert.deepEqual(parseDurationTargetDates('10/30p調11/6、11/13、11/20、11/27、12/4和12/11b各+30min', 2026), {
+    sourceDate: '2026-10-30',
+    targetDates: ['2026-11-06', '2026-11-13', '2026-11-20', '2026-11-27', '2026-12-04', '2026-12-11']
+  });
+});
+
+test('recognizes a move note with an intervening absence reason before 調', () => {
+  assert.deepEqual(parseDurationTargetDates('10/29p隔宿調11/5、11/12和11/19各+30min', 2026), {
+    sourceDate: '2026-10-29',
+    targetDates: ['2026-11-05', '2026-11-12', '2026-11-19']
+  });
+});
+
+test('parses purple source moves with multiple target dates and non-30-minute duration', () => {
+  const result = parseDurationTargetDates('7/17p調11/3、11/10各+45min', 2026);
+  assert.deepEqual(result, {
+    sourceDate: '2026-07-17',
+    targetDates: ['2026-11-03', '2026-11-10']
+  });
+});
+
+test('parses date-only variants with duration values other than 30 minutes', () => {
+  assert.deepEqual(parseDurationTargetDates('11/2、11/9和11/16各+45分鐘', 2026), {
+    sourceDate: '', targetDates: ['2026-11-02', '2026-11-09', '2026-11-16']
+  });
 });
 
 test('preserves start and end in course time ranges', () => {
