@@ -359,6 +359,7 @@ module.exports = {
   hasDateScopedTargetOverride,
   mergeExplicitMoveDestinationOverrides,
   isSourceImportedFixedNote,
+  normalizeStudentNameForContact,
   extractReminderStudentNames,
   isValidDateKey,
   parseDurationTargetDates,
